@@ -4,6 +4,8 @@ import { CATEGORIES } from '../data/bookCatalog';
 
 interface HeroSectionProps {
   featuredBook: Book;
+  totalBooksCount?: number;
+  avgRating?: number;
   selectedCategory: string;
   onSelectCategory: (slug: string) => void;
   onExploreBooks: () => void;
@@ -14,6 +16,8 @@ interface HeroSectionProps {
 
 export const HeroSection: React.FC<HeroSectionProps> = ({
   featuredBook,
+  totalBooksCount = 18,
+  avgRating = 4.8,
   selectedCategory,
   onSelectCategory,
   onExploreBooks,
@@ -79,11 +83,11 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
             {/* Trust Proof Metrics */}
             <div className="pt-6 border-t border-slate-200/70 grid grid-cols-3 gap-6 max-w-md">
               <div>
-                <div className="font-serif font-black text-2xl text-slate-900">32+</div>
+                <div className="font-serif font-black text-2xl text-slate-900">{totalBooksCount}</div>
                 <div className="text-xs text-slate-500 font-sans">Curated Books</div>
               </div>
               <div>
-                <div className="font-serif font-black text-2xl text-slate-900">4.9 ★</div>
+                <div className="font-serif font-black text-2xl text-slate-900">{avgRating.toFixed(1)} ★</div>
                 <div className="text-xs text-slate-500 font-sans">Verified Reviews</div>
               </div>
               <div>

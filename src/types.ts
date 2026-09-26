@@ -15,6 +15,9 @@ export interface Book {
   year: number;
   language: string;
   description: string;
+  reviewCount?: number;
+  reviews_count?: number;
+  featured?: boolean;
 }
 
 export interface UserSession {

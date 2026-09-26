@@ -3,13 +3,24 @@ import { Package, Truck, Check, Clock, ArrowRight, Printer, X, FileText, Chevron
 import { Book } from '../types';
 
 export interface PlacedOrder {
-  id: string;
+  id: string | number;
   date: string;
-  total: number;
-  status: 'Confirmed' | 'Processing' | 'Shipped' | 'Delivered';
+  total?: number;
+  totalAmount?: number;
+  status: 'Confirmed' | 'Processing' | 'Shipped' | 'Delivered' | 'Cancelled';
   paymentMethod: string;
   items: { book: Book; quantity: number; price: number }[];
-  address: { name: string; phone: string; address: string; city: string; pincode: string };
+  address?: {
+    name?: string;
+    fullName?: string;
+    phone?: string;
+    address?: string;
+    hostelBlock?: string;
+    roomNo?: string;
+    city?: string;
+    pincode?: string;
+    deliveryNotes?: string;
+  };
 }
 
 interface OrdersViewProps {
@@ -33,14 +44,14 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             📦
           </div>
           <h2 className="font-serif text-2xl font-bold text-zinc-900 mb-2">
-            No orders placed yet
+            No orders yet. Your next read could be here.
           </h2>
           <p className="text-sm text-zinc-500 mb-8 max-w-sm mx-auto leading-relaxed">
             When you complete checkout, your order confirmation, dispatch tracking, and printable GST tax invoices will appear here.
           </p>
           <button
             onClick={onNavigateToCatalog}
-            className="px-6 py-3 rounded-xl bg-blue-900 hover:bg-blue-950 text-white font-semibold text-sm transition-all shadow-md inline-flex items-center gap-2"
+            className="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-sm transition-all shadow-md inline-flex items-center gap-2"
           >
             <span>Explore Bookstore</span>
             <ArrowRight className="w-4 h-4" />
@@ -77,6 +88,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         {orders.map((order) => (
           <div
             key={order.id}
+            data-testid="order-card"
             className="bg-white border border-[#E8E5DF] rounded-3xl overflow-hidden shadow-sm hover:shadow-md transition-shadow"
           >
             {/* Order Card Header */}
@@ -88,11 +100,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                 </div>
                 <div>
                   <span className="text-zinc-400 block font-medium">TOTAL AMOUNT</span>
-                  <span className="font-bold text-zinc-900">₹{order.total}</span>
+                  <span className="font-bold text-zinc-900">₹{order.total || (order as any).totalAmount || 0}</span>
                 </div>
                 <div>
                   <span className="text-zinc-400 block font-medium">SHIP TO</span>
-                  <span className="font-semibold text-zinc-900">{order.address.name}</span>
+                  <span className="font-semibold text-zinc-900">{order.address?.name || 'Campus Student'}</span>
                 </div>
                 <div>
                   <span className="text-zinc-400 block font-medium">PAYMENT</span>
@@ -102,7 +114,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
 
               <div className="flex items-center gap-3">
                 <span className="font-mono font-bold text-blue-900 bg-blue-50 px-2.5 py-1 rounded-md border border-blue-100">
-                  {order.id}
+                  {(order as any).orderNumber || (typeof order.id === 'number' ? `BN-${order.id}` : order.id)}
                 </span>
                 <button
                   onClick={() => setSelectedInvoice(order)}
@@ -205,10 +217,12 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             <div className="grid grid-cols-2 gap-4 bg-zinc-50 p-4 rounded-2xl border border-zinc-200 text-xs mb-6">
               <div>
                 <span className="text-zinc-400 block font-medium">Billed & Shipped To:</span>
-                <strong className="text-zinc-900 text-sm block mt-0.5">{selectedInvoice.address.name}</strong>
-                <div className="text-zinc-600 mt-1">{selectedInvoice.address.address}</div>
-                <div className="text-zinc-600">{selectedInvoice.address.city} - {selectedInvoice.address.pincode}</div>
-                <div className="text-zinc-500 mt-1">📞 {selectedInvoice.address.phone}</div>
+                <strong className="text-zinc-900 text-sm block mt-0.5">{selectedInvoice.address?.name || 'Campus Student'}</strong>
+                <div className="text-zinc-600 mt-1">{selectedInvoice.address?.address || selectedInvoice.address?.hostelBlock || 'University Campus'}</div>
+                <div className="text-zinc-600">
+                  {selectedInvoice.address?.city ? `${selectedInvoice.address.city} - ${selectedInvoice.address?.pincode || ''}` : selectedInvoice.address?.roomNo || ''}
+                </div>
+                <div className="text-zinc-500 mt-1">📞 {selectedInvoice.address?.phone || '+91 98765 43210'}</div>
               </div>
 
               <div>

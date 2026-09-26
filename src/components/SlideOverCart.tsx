@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Book, CartSummaryData } from '../types';
+import { api } from '../api';
 
 interface SlideOverCartProps {
   isOpen: boolean;
@@ -15,6 +16,7 @@ interface SlideOverCartProps {
   onProceedToCheckout: () => void;
   onNavigateToCatalog: () => void;
   onOpenBookDetail: (book: Book) => void;
+  onSaveForLater?: (book: Book) => void;
 }
 
 export const SlideOverCart: React.FC<SlideOverCartProps> = ({
@@ -31,9 +33,19 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
   onProceedToCheckout,
   onNavigateToCatalog,
   onOpenBookDetail,
+  onSaveForLater,
 }) => {
   const [couponInput, setCouponInput] = useState('');
   const [couponError, setCouponError] = useState('');
+
+  // Close on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -46,31 +58,40 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
     })
     .filter(item => item.book !== undefined) as { id: number; book: Book; quantity: number }[];
 
-  const handleApplyCoupon = (e: React.FormEvent) => {
+  const handleApplyCoupon = async (e: React.FormEvent) => {
     e.preventDefault();
     setCouponError('');
     const code = couponInput.trim().toUpperCase();
     if (!code) return;
 
-    if (['WELCOME10', 'BOOKNEST50', 'READMORE'].includes(code)) {
-      onApplyCoupon(code);
-      setCouponInput('');
-    } else {
-      setCouponError('Invalid coupon. Try WELCOME10, BOOKNEST50, or READMORE');
+    try {
+      const res = await api.validateCoupon(code, summary.subtotal);
+      if (res.valid) {
+        onApplyCoupon(code);
+        setCouponInput('');
+      } else {
+        setCouponError(res.message || 'Invalid coupon code');
+      }
+    } catch {
+      setCouponError('Error validating coupon. Please try again.');
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-hidden animate-in fade-in duration-200">
-      
+    <div 
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="cart-drawer-heading"
+      className="fixed inset-0 z-50 overflow-hidden"
+    >
       {/* Backdrop */}
       <div 
         onClick={onClose}
-        className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs transition-opacity"
+        className="absolute inset-0 bg-slate-950/60 backdrop-blur-xs transition-opacity animate-in fade-in duration-200"
       />
 
       <div className="fixed inset-y-0 right-0 max-w-full flex pl-10">
-        <div className="w-screen max-w-md bg-white shadow-2xl flex flex-col animate-in slide-in-from-right duration-300">
+        <div className="w-screen max-w-md bg-white shadow-2xl flex flex-col border-l border-slate-200 animate-in slide-in-from-right duration-300">
           
           {/* Drawer Header */}
           <div className="p-5 border-b border-slate-200/80 flex items-center justify-between bg-[#FAF8F5]">
@@ -79,8 +100,8 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
                 <i className="fa-solid fa-bag-shopping text-sm"></i>
               </div>
               <div>
-                <h2 className="font-serif font-bold text-lg text-slate-900">
-                  Shopping Cart
+                <h2 id="cart-drawer-heading" className="font-serif font-bold text-lg text-slate-900">
+                  Shopping Bag
                 </h2>
                 <p className="text-[11px] text-slate-500">
                   {summary.itemCount} {summary.itemCount === 1 ? 'item' : 'items'} selected
@@ -90,7 +111,9 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
 
             <button
               onClick={onClose}
-              className="w-8 h-8 rounded-full bg-white hover:bg-slate-100 border border-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center transition-colors"
+              aria-label="Close cart drawer"
+              data-testid="close-cart-btn"
+              className="w-8 h-8 rounded-full bg-white hover:bg-slate-100 border border-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
             >
               <i className="fa-solid fa-xmark text-sm"></i>
             </button>
@@ -110,32 +133,31 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
                 )}
               </span>
               <span className="text-[11px] text-slate-500">
-                ₹{summary.subtotal} / ₹{summary.freeDeliveryThreshold}
+                Threshold: ₹499
               </span>
             </div>
 
             {/* Progress bar */}
-            <div className="w-full h-2 bg-amber-200/70 rounded-full overflow-hidden">
+            <div className="w-full h-1.5 bg-amber-200/60 rounded-full overflow-hidden">
               <div 
-                className={`h-full transition-all duration-500 rounded-full ${
-                  summary.isFreeDelivery ? 'bg-emerald-500' : 'bg-amber-500'
-                }`}
-                style={{ width: `${Math.min(100, summary.freeDeliveryProgress)}%` }}
+                className="h-full bg-gradient-to-r from-amber-500 to-amber-600 rounded-full transition-all duration-300"
+                style={{ width: `${summary.freeDeliveryProgress}%` }}
               />
             </div>
           </div>
 
-          {/* Cart Item List */}
+          {/* Cart Items List */}
           <div className="flex-1 overflow-y-auto p-5 divide-y divide-slate-100">
             {cartEntries.length > 0 ? (
               cartEntries.map(({ id, book, quantity }) => {
                 const finalPrice = Math.round(book.price * (1 - book.discount / 100));
                 const itemTotal = finalPrice * quantity;
+                const isMaxStock = quantity >= book.stock;
 
                 return (
-                  <div key={id} className="py-4 first:pt-0 last:pb-0 flex gap-3.5 group">
+                  <div key={id} className="py-4 first:pt-0 last:pb-0 flex gap-4 group">
                     
-                    {/* 3D Book Cover thumbnail */}
+                    {/* Cover thumbnail */}
                     <div 
                       onClick={() => {
                         onClose();
@@ -154,7 +176,7 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
                     <div className="flex-1 flex flex-col justify-between">
                       <div>
                         <div className="flex items-start justify-between gap-2">
-                          <h4 
+                          <h3 
                             onClick={() => {
                               onClose();
                               onOpenBookDetail(book);
@@ -162,10 +184,12 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
                             className="font-serif font-bold text-sm text-slate-900 hover:text-amber-800 cursor-pointer line-clamp-1"
                           >
                             {book.title}
-                          </h4>
+                          </h3>
                           <button
+                            type="button"
                             onClick={() => onRemoveItem(id, book.title)}
                             className="text-slate-400 hover:text-rose-600 p-1 transition-colors"
+                            aria-label={`Remove ${book.title} from cart`}
                             title="Remove item"
                           >
                             <i className="fa-regular fa-trash-can text-xs"></i>
@@ -174,13 +198,21 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
                         <p className="text-[11px] text-slate-500 line-clamp-1">
                           {book.author} · <span className="text-amber-700">{book.category}</span>
                         </p>
+                        
+                        {isMaxStock && (
+                          <span className="text-[10px] text-amber-700 font-semibold block mt-0.5">
+                            Max available campus stock reached ({book.stock})
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex items-center justify-between mt-3 pt-2">
                         {/* Dynamic Quantity Counter */}
                         <div className="flex items-center rounded-lg border border-slate-200 bg-slate-50 p-0.5">
                           <button
+                            type="button"
                             onClick={() => onUpdateQty(id, quantity - 1)}
+                            aria-label="Decrease quantity"
                             className="w-6 h-6 rounded-md bg-white hover:bg-slate-200 text-slate-700 flex items-center justify-center text-xs font-bold transition-colors shadow-2xs"
                           >
                             -
@@ -189,13 +221,27 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
                             {quantity}
                           </span>
                           <button
+                            type="button"
                             onClick={() => onUpdateQty(id, quantity + 1)}
-                            disabled={quantity >= book.stock}
+                            disabled={isMaxStock}
+                            aria-label="Increase quantity"
                             className="w-6 h-6 rounded-md bg-white hover:bg-slate-200 text-slate-700 disabled:opacity-40 flex items-center justify-center text-xs font-bold transition-colors shadow-2xs"
                           >
                             +
                           </button>
                         </div>
+
+                        {/* Save for later action */}
+                        {onSaveForLater && (
+                          <button
+                            type="button"
+                            onClick={() => onSaveForLater(book)}
+                            className="text-[11px] text-amber-800 hover:text-amber-950 font-medium hover:underline flex items-center gap-1"
+                          >
+                            <i className="fa-regular fa-heart text-[10px]"></i>
+                            <span>Save for later</span>
+                          </button>
+                        )}
 
                         {/* Price */}
                         <div className="text-right">
@@ -213,15 +259,16 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
                 );
               })
             ) : (
+              /* Thoughtful Empty State */
               <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-500">
                 <div className="w-16 h-16 rounded-full bg-amber-50 text-amber-500 flex items-center justify-center text-2xl mb-4">
                   <i className="fa-solid fa-basket-shopping"></i>
                 </div>
                 <h3 className="font-serif font-bold text-lg text-slate-900 mb-1">
-                  Your cart is empty
+                  Your bag is waiting for its first book.
                 </h3>
                 <p className="text-xs text-slate-500 max-w-xs mb-6">
-                  Explore our curated shelves and find your next inspiring read.
+                  Explore our curated shelves and find your next inspiring academic or literary read.
                 </p>
                 <button
                   onClick={() => {
@@ -243,15 +290,14 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
               {/* Promo Code Input */}
               <div>
                 {appliedCoupon ? (
-                  <div className="flex items-center justify-between p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs">
-                    <div className="flex items-center gap-2">
-                      <i className="fa-solid fa-tag text-emerald-600"></i>
-                      <span className="font-bold tracking-wider">{appliedCoupon}</span>
-                      <span className="text-emerald-700">(-₹{summary.couponDiscount})</span>
-                    </div>
+                  <div className="flex items-center justify-between p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs">
+                    <span className="font-semibold text-emerald-800 flex items-center gap-1.5">
+                      <i className="fa-solid fa-tag"></i>
+                      <span>Coupon &ldquo;{appliedCoupon}&rdquo; Applied</span>
+                    </span>
                     <button
                       onClick={onRemoveCoupon}
-                      className="text-xs text-rose-600 hover:underline font-medium"
+                      className="text-emerald-700 hover:text-emerald-900 font-bold"
                     >
                       Remove
                     </button>
@@ -262,12 +308,12 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
                       type="text"
                       value={couponInput}
                       onChange={(e) => setCouponInput(e.target.value)}
-                      placeholder="Coupon code (e.g. WELCOME10)"
-                      className="flex-1 py-2 px-3 rounded-xl bg-white border border-slate-200 text-xs text-slate-900 uppercase tracking-wide focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      placeholder="Promo code (try WELCOME10)"
+                      className="flex-1 py-2 px-3 rounded-xl border border-slate-200 bg-white text-xs uppercase font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
                     />
                     <button
                       type="submit"
-                      className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-amber-300 font-semibold text-xs transition-colors"
+                      className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-amber-600 text-amber-50 hover:text-slate-950 font-bold text-xs transition-colors"
                     >
                       Apply
                     </button>
@@ -296,17 +342,18 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
                 </div>
                 <div className="flex justify-between pt-2 border-t border-slate-200/80 font-serif text-base font-bold text-slate-950">
                   <span>Total Amount</span>
-                  <span>₹{summary.grandTotal}</span>
+                  <span className="font-mono text-lg text-amber-950">₹{summary.grandTotal}</span>
                 </div>
               </div>
 
               {/* Checkout Action Button */}
               <button
+                data-testid="proceed-checkout-btn"
                 onClick={() => {
                   onClose();
                   onProceedToCheckout();
                 }}
-                className="w-full py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-sm shadow-md hover:shadow-xl transition-all duration-200 flex items-center justify-center gap-2 active:scale-98"
+                className="w-full py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-sm shadow-md hover:shadow-xl transition-all duration-200 flex items-center justify-center gap-2 active:scale-98 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
               >
                 <span>Proceed to 3-Step Checkout</span>
                 <i className="fa-solid fa-arrow-right text-xs"></i>

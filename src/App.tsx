@@ -1,6 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Book, UserSession, CartSummaryData } from './types';
 import { INITIAL_BOOKS } from './data/bookCatalog';
+import { api, getStoredToken, setStoredToken } from './api';
 
 import { Navbar } from './components/Navbar';
 import { HeroSection } from './components/HeroSection';
@@ -13,23 +14,55 @@ import { AdminDashboard } from './components/AdminDashboard';
 import { QuickViewModal } from './components/QuickViewModal';
 import { OrdersView } from './components/OrdersView';
 import { WishlistView } from './components/WishlistView';
+import { AuthModal } from './components/AuthModal';
 
 export default function App() {
-  // Navigation & View state
-  const [activeView, setActiveView] = useState<'store' | 'catalog' | 'scanner' | 'admin' | 'orders' | 'wishlist'>('store');
+  // Navigation & View state (persisted across page reloads via hash and localStorage)
+  const [activeView, setActiveView] = useState<'store' | 'catalog' | 'scanner' | 'admin' | 'orders' | 'wishlist'>(() => {
+    try {
+      const hash = window.location.hash.replace(/^#/, '') as any;
+      if (['store', 'catalog', 'scanner', 'admin', 'orders', 'wishlist'].includes(hash)) {
+        return hash;
+      }
+      const saved = localStorage.getItem('booknest_active_view') as any;
+      if (['store', 'catalog', 'scanner', 'admin', 'orders', 'wishlist'].includes(saved)) {
+        return saved;
+      }
+    } catch {}
+    return 'store';
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('booknest_active_view', activeView);
+      window.location.hash = activeView;
+    } catch {}
+  }, [activeView]);
   
   // Data state
   const [books, setBooks] = useState<Book[]>(INITIAL_BOOKS);
-  const [cart, setCart] = useState<Record<number, number>>({
-    1: 1, // Atomic Habits pre-loaded
-    2: 1  // Clean Code pre-loaded
+  const [cart, setCart] = useState<Record<number, number>>(() => {
+    try {
+      const saved = localStorage.getItem('booknest_guest_cart');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
   });
-  const [wishlist, setWishlist] = useState<number[]>([4, 6]); // Dune and Psychology of Money pre-wishlisted
+  const [wishlist, setWishlist] = useState<number[]>(() => {
+    try {
+      const saved = localStorage.getItem('booknest_guest_wishlist');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [appliedCoupon, setAppliedCoupon] = useState<string | null>('WELCOME10');
   
   // Modals & Drawers
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [quickViewBook, setQuickViewBook] = useState<Book | null>(null);
 
   // Filters & Sorting in Catalog
@@ -42,49 +75,119 @@ export default function App() {
   // Toast Notification state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
 
-  // Current User Session (Student / Admin switch)
-  const [currentUser, setCurrentUser] = useState<UserSession>({
-    id: 1,
-    name: 'Aditya Chauhan',
-    email: 'adityachauhan8679@gmail.com',
-    role: 'user',
-    phone: '+91 98765 43210',
-    joinedDate: 'August 2024'
-  });
+  // Current User Session (Authentic JWT + SQLite user)
+  const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
 
   const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
   };
 
-  const toggleUserRole = () => {
-    const nextRole = currentUser.role === 'admin' ? 'user' : 'admin';
-    setCurrentUser(prev => ({
-      ...prev,
-      role: nextRole,
-      name: nextRole === 'admin' ? 'Campus Admin (Prof. Chauhan)' : 'Aditya Chauhan'
-    }));
-    showToast(`Switched to ${nextRole === 'admin' ? 'Administrator' : 'Student'} Mode`, 'info');
-    if (nextRole === 'admin') {
-      setActiveView('admin');
+  const loadUserData = () => {
+    api.getCart()
+      .then(res => {
+        if (res.cart) setCart(res.cart);
+      })
+      .catch(() => {});
+
+    api.getWishlist()
+      .then(res => {
+        if (res.wishlist) setWishlist(res.wishlist);
+      })
+      .catch(() => {});
+
+    api.getOrders()
+      .then(res => {
+        if (res.orders) setPlacedOrders(res.orders);
+      })
+      .catch(() => {});
+  };
+
+  // Initial Data & Auth bootstrap
+  useEffect(() => {
+    // 1. Fetch live catalog from database
+    api.getBooks()
+      .then(res => {
+        if (res.books && res.books.length > 0) {
+          setBooks(res.books);
+        }
+      })
+      .catch(err => {
+        console.warn('Backend catalog query warning:', err);
+      });
+
+    // 2. Authenticate or restore active session
+    const token = getStoredToken();
+    if (token) {
+      api.getMe()
+        .then(res => {
+          setCurrentUser(res.user);
+          loadUserData();
+        })
+        .catch(() => {
+          setStoredToken(null);
+          setCurrentUser(null);
+        });
+    }
+  }, []);
+
+  const handleAuthSuccess = async (user: UserSession, _token: string) => {
+    setCurrentUser(user);
+    showToast(`Welcome back, ${user.name}!`, 'success');
+    try {
+      if (Object.keys(cart).length > 0) {
+        await api.syncCart(cart);
+      }
+      if (wishlist.length > 0) {
+        await api.syncWishlist(wishlist);
+      }
+    } catch (e) {
+      console.warn('Sync error:', e);
+    }
+    loadUserData();
+  };
+
+  const handleLogout = async () => {
+    try {
+      await api.logout();
+    } catch {}
+    setStoredToken(null);
+    setCurrentUser(null);
+    setPlacedOrders([]);
+    setCart({});
+    setWishlist([]);
+    localStorage.removeItem('booknest_guest_cart');
+    localStorage.removeItem('booknest_guest_wishlist');
+    showToast('Signed out of campus account', 'info');
+    if (activeView === 'admin' || activeView === 'orders') {
+      setActiveView('store');
     }
   };
 
   // Cart Management
-  const addToCart = (book: Book, quantity = 1) => {
+  const addToCart = async (book: Book, quantity = 1) => {
     if (book.stock <= 0) {
       showToast(`"${book.title}" is currently out of stock`, 'error');
       return;
     }
-    setCart(prev => {
-      const currentQty = prev[book.id] || 0;
-      const newQty = Math.min(book.stock, currentQty + quantity);
-      return { ...prev, [book.id]: newQty };
-    });
+    const currentQty = cart[book.id] || 0;
+    const newQty = Math.min(book.stock, currentQty + quantity);
+    const newCart = { ...cart, [book.id]: newQty };
+    setCart(newCart);
     showToast(`Added "${book.title}" to your cart`, 'success');
+
+    if (currentUser) {
+      try {
+        await api.addToCart(book.id, quantity);
+      } catch (e) {
+        console.warn('API cart error:', e);
+      }
+    } else {
+      localStorage.setItem('booknest_guest_cart', JSON.stringify(newCart));
+    }
   };
 
-  const updateCartQty = (bookId: number, qty: number) => {
+  const updateCartQty = async (bookId: number, qty: number) => {
     const book = books.find(b => b.id === bookId);
     if (!book) return;
 
@@ -98,37 +201,76 @@ export default function App() {
       return;
     }
 
-    setCart(prev => ({ ...prev, [bookId]: qty }));
-  };
+    const newCart = { ...cart, [bookId]: qty };
+    setCart(newCart);
 
-  const removeCartItem = (bookId: number, title?: string) => {
-    setCart(prev => {
-      const copy = { ...prev };
-      delete copy[bookId];
-      return copy;
-    });
-    if (title) {
-      showToast(`Removed "${title}" from your cart`, 'info');
+    if (currentUser) {
+      try {
+        await api.updateCartQty(bookId, qty);
+      } catch (e) {
+        console.warn('API cart error:', e);
+      }
+    } else {
+      localStorage.setItem('booknest_guest_cart', JSON.stringify(newCart));
     }
   };
 
-  const clearCart = () => {
+  const removeCartItem = async (bookId: number, title?: string) => {
+    const newCart = { ...cart };
+    delete newCart[bookId];
+    setCart(newCart);
+
+    if (title) {
+      showToast(`Removed "${title}" from your cart`, 'info');
+    }
+
+    if (currentUser) {
+      try {
+        await api.removeFromCart(bookId);
+      } catch (e) {
+        console.warn('API cart error:', e);
+      }
+    } else {
+      localStorage.setItem('booknest_guest_cart', JSON.stringify(newCart));
+    }
+  };
+
+  const clearCart = async () => {
     setCart({});
+    if (currentUser) {
+      try {
+        await api.clearCart();
+      } catch (e) {}
+    } else {
+      localStorage.removeItem('booknest_guest_cart');
+    }
   };
 
   // Wishlist Management
-  const toggleWishlist = (bookId: number, title?: string) => {
+  const toggleWishlist = async (bookId: number, title?: string) => {
     const book = books.find(b => b.id === bookId);
-    setWishlist(prev => {
-      const exists = prev.includes(bookId);
-      if (exists) {
-        showToast(`Removed "${title || book?.title || 'Book'}" from Wishlist`, 'info');
-        return prev.filter(id => id !== bookId);
-      } else {
-        showToast(`Saved "${title || book?.title || 'Book'}" to Wishlist`, 'success');
-        return [...prev, bookId];
+    const exists = wishlist.includes(bookId);
+    const newWishlist = exists 
+      ? wishlist.filter(id => id !== bookId) 
+      : [...wishlist, bookId];
+    
+    setWishlist(newWishlist);
+    showToast(
+      exists 
+        ? `Removed "${title || book?.title || 'Book'}" from Wishlist` 
+        : `Saved "${title || book?.title || 'Book'}" to Wishlist`, 
+      exists ? 'info' : 'success'
+    );
+
+    if (currentUser) {
+      try {
+        await api.toggleWishlist(bookId);
+      } catch (e) {
+        console.warn('API wishlist error:', e);
       }
-    });
+    } else {
+      localStorage.setItem('booknest_guest_wishlist', JSON.stringify(newWishlist));
+    }
   };
 
   const moveWishlistToCart = (book: Book) => {
@@ -143,7 +285,7 @@ export default function App() {
     wishlist.forEach(id => {
       const b = books.find(item => item.id === id);
       if (b && b.stock > 0) {
-        setCart(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }));
+        addToCart(b, 1);
         addedCount++;
       }
     });
@@ -207,27 +349,45 @@ export default function App() {
   }, [cart, books, appliedCoupon]);
 
   // Admin Catalog CRUD Handlers
-  const handleUpdateBookStock = (bookId: number, newStock: number) => {
-    setBooks(prev => prev.map(b => b.id === bookId ? { ...b, stock: newStock } : b));
-    showToast('Warehouse stock levels updated successfully', 'success');
+  const handleUpdateBookStock = async (bookId: number, newStock: number) => {
+    try {
+      await api.updateStock(bookId, newStock);
+      setBooks(prev => prev.map(b => b.id === bookId ? { ...b, stock: newStock } : b));
+      showToast('Warehouse stock levels updated successfully', 'success');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to update stock', 'error');
+    }
   };
 
-  const handleAddBook = (newBookData: Omit<Book, 'id'>) => {
-    const newId = Math.max(...books.map(b => b.id), 0) + 1;
-    const newBook: Book = { ...newBookData, id: newId };
-    setBooks(prev => [newBook, ...prev]);
-    showToast(`Added "${newBook.title}" to catalog`, 'success');
+  const handleAddBook = async (newBookData: Omit<Book, 'id'>) => {
+    try {
+      const res = await api.addBook(newBookData);
+      setBooks(prev => [res.book, ...prev]);
+      showToast(`Added "${res.book.title}" to catalog`, 'success');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to add book', 'error');
+    }
   };
 
-  const handleUpdateBook = (updated: Book) => {
-    setBooks(prev => prev.map(b => b.id === updated.id ? updated : b));
-    showToast(`Updated "${updated.title}" successfully`, 'success');
+  const handleUpdateBook = async (updated: Book) => {
+    try {
+      const res = await api.updateBook(updated.id, updated);
+      setBooks(prev => prev.map(b => b.id === updated.id ? res.book : b));
+      showToast(`Updated "${res.book.title}" successfully`, 'success');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to update book', 'error');
+    }
   };
 
-  const handleDeleteBook = (bookId: number) => {
-    const book = books.find(b => b.id === bookId);
-    setBooks(prev => prev.filter(b => b.id !== bookId));
-    showToast(`Deleted "${book?.title || 'Book'}" from catalog`, 'info');
+  const handleDeleteBook = async (bookId: number) => {
+    try {
+      const book = books.find(b => b.id === bookId);
+      await api.deleteBook(bookId);
+      setBooks(prev => prev.filter(b => b.id !== bookId));
+      showToast(`Deleted "${book?.title || 'Book'}" from catalog`, 'info');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to delete book', 'error');
+    }
   };
 
   // Filtered Catalog Books
@@ -260,49 +420,40 @@ export default function App() {
   }, [books, selectedCategory, catalogSearch, maxPrice, stockOnly, sortBy]);
 
   // Orders state
-  const [placedOrders, setPlacedOrders] = useState<any[]>([
-    {
-      id: 104821,
-      date: '24 Sep 2026, 04:30 PM',
-      totalAmount: 1148,
-      status: 'Confirmed',
-      paymentMethod: 'UPI',
-      items: [
-        {
-          book: books[0],
-          quantity: 1,
-          price: 424,
-        },
-        {
-          book: books[1],
-          quantity: 1,
-          price: 719,
-        }
-      ]
-    }
-  ]);
+  const [placedOrders, setPlacedOrders] = useState<any[]>([]);
 
-  const handleOrderSuccess = (orderId: number, details: any) => {
-    setPlacedOrders(prev => [
-      {
-        id: orderId,
-        date: details.date,
-        totalAmount: details.summary.grandTotal,
-        status: 'Confirmed',
-        paymentMethod: details.paymentMethod.toUpperCase(),
-        items: details.items.map((i: any) => ({
-          book: i.book,
-          quantity: i.quantity,
-          price: i.unitPrice
-        }))
-      },
-      ...prev
-    ]);
+  const handleOrderSuccess = (orderId: number, _details: any) => {
+    loadUserData();
+    api.getBooks().then(res => setBooks(res.books)).catch(() => {});
     clearCart();
+    setActiveView('orders');
     showToast(`Order #BN-${orderId} placed successfully!`, 'success');
   };
 
-  const featuredBook = books[0] || INITIAL_BOOKS[0];
+  const featuredBook = books.find(b => b.featured) || books[0] || INITIAL_BOOKS[0];
+
+  // Dynamic Home Sections
+  const featuredBooks = useMemo(() => {
+    const list = books.filter(b => b.featured);
+    return list.length >= 4 ? list.slice(0, 4) : books.slice(0, 4);
+  }, [books]);
+
+  const popularBooks = useMemo(() => {
+    return [...books]
+      .sort((a, b) => b.rating - a.rating || (b.reviewCount || b.reviews_count || 0) - (a.reviewCount || a.reviews_count || 0))
+      .slice(0, 4);
+  }, [books]);
+
+  const newArrivals = useMemo(() => {
+    return [...books]
+      .sort((a, b) => (b.year || 2024) - (a.year || 2024) || b.id - a.id)
+      .slice(0, 4);
+  }, [books]);
+
+  const avgCatalogRating = useMemo(() => {
+    if (books.length === 0) return 4.8;
+    return books.reduce((acc, b) => acc + b.rating, 0) / books.length;
+  }, [books]);
 
   return (
     <div className="min-h-screen bg-[#FAF8F5] text-slate-900 font-sans selection:bg-amber-200 selection:text-slate-950 flex flex-col">
@@ -320,15 +471,18 @@ export default function App() {
         }}
         onOpenCart={() => setIsCartOpen(true)}
         onSelectBook={(book) => setQuickViewBook(book)}
-        onToggleUserRole={toggleUserRole}
+        onOpenAuth={() => setIsAuthOpen(true)}
+        onLogout={handleLogout}
       />
 
       {/* ================= VIEW: HOME STOREFRONT ================= */}
       {activeView === 'store' && (
         <main className="flex-1">
-          {/* Editorial Hero Section */}
+          {/* Editorial Hero Section with live metrics */}
           <HeroSection
             featuredBook={featuredBook}
+            totalBooksCount={books.length}
+            avgRating={avgCatalogRating}
             selectedCategory={selectedCategory}
             onSelectCategory={(slug) => {
               setSelectedCategory(slug);
@@ -340,8 +494,9 @@ export default function App() {
             onQuickView={(book) => setQuickViewBook(book)}
           />
 
-          {/* Category Shelf Grid */}
+          {/* Real Category Shelf Grid */}
           <CategoryGrid
+            books={books}
             selectedCategory={selectedCategory}
             onSelectCategory={(slug) => {
               setSelectedCategory(slug);
@@ -349,16 +504,16 @@ export default function App() {
             }}
           />
 
-          {/* Curated Bestsellers Grid */}
-          <section className="py-16 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex flex-col sm:flex-row sm:items-end justify-between mb-10 gap-4">
+          {/* Section 1: Real Featured Books */}
+          <section className="py-14 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex flex-col sm:flex-row sm:items-end justify-between mb-8 gap-4">
               <div>
                 <div className="text-xs font-bold text-amber-700 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
                   <i className="fa-solid fa-sparkles text-amber-500"></i>
-                  Handpicked Recommendations
+                  Featured Campus Recommendations
                 </div>
-                <h2 className="font-serif font-black text-3xl text-slate-950">
-                  Featured Academic &amp; Literary Reads
+                <h2 className="font-serif font-black text-2xl sm:text-3xl text-slate-950">
+                  Essential Academic &amp; Literary Reads
                 </h2>
               </div>
 
@@ -366,14 +521,90 @@ export default function App() {
                 onClick={() => setActiveView('catalog')}
                 className="inline-flex items-center gap-2 text-xs font-bold text-amber-800 hover:text-amber-950 group"
               >
-                <span>Browse Complete Catalog ({books.length} Books)</span>
+                <span>Browse All ({books.length} Books)</span>
                 <i className="fa-solid fa-arrow-right text-xs group-hover:translate-x-1 transition-transform"></i>
               </button>
             </div>
 
-            {/* Book Cards Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-              {books.slice(0, 8).map((book) => (
+              {featuredBooks.map((book) => (
+                <BookCard
+                  key={book.id}
+                  book={book}
+                  isWishlisted={wishlist.includes(book.id)}
+                  onAddToCart={addToCart}
+                  onToggleWishlist={toggleWishlist}
+                  onQuickView={(b) => setQuickViewBook(b)}
+                />
+              ))}
+            </div>
+          </section>
+
+          {/* Section 2: Real Popular Books */}
+          <section className="py-14 bg-white/70 border-y border-slate-200/70">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+              <div className="flex flex-col sm:flex-row sm:items-end justify-between mb-8 gap-4">
+                <div>
+                  <div className="text-xs font-bold text-amber-700 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
+                    <i className="fa-solid fa-fire text-amber-500"></i>
+                    Highest Rated by Campus Readers
+                  </div>
+                  <h2 className="font-serif font-black text-2xl sm:text-3xl text-slate-950">
+                    Most Popular Student &amp; Scholar Picks
+                  </h2>
+                </div>
+
+                <button
+                  onClick={() => {
+                    setSortBy('rating');
+                    setActiveView('catalog');
+                  }}
+                  className="inline-flex items-center gap-2 text-xs font-bold text-amber-800 hover:text-amber-950 group"
+                >
+                  <span>View All Top Rated</span>
+                  <i className="fa-solid fa-arrow-right text-xs group-hover:translate-x-1 transition-transform"></i>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                {popularBooks.map((book) => (
+                  <BookCard
+                    key={book.id}
+                    book={book}
+                    isWishlisted={wishlist.includes(book.id)}
+                    onAddToCart={addToCart}
+                    onToggleWishlist={toggleWishlist}
+                    onQuickView={(b) => setQuickViewBook(b)}
+                  />
+                ))}
+              </div>
+            </div>
+          </section>
+
+          {/* Section 3: Real New Arrivals */}
+          <section className="py-14 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex flex-col sm:flex-row sm:items-end justify-between mb-8 gap-4">
+              <div>
+                <div className="text-xs font-bold text-amber-700 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
+                  <i className="fa-solid fa-clock-rotate-left text-amber-500"></i>
+                  Fresh On Campus Shelves
+                </div>
+                <h2 className="font-serif font-black text-2xl sm:text-3xl text-slate-950">
+                  New Arrivals &amp; Recent Editions
+                </h2>
+              </div>
+
+              <button
+                onClick={() => setActiveView('catalog')}
+                className="inline-flex items-center gap-2 text-xs font-bold text-amber-800 hover:text-amber-950 group"
+              >
+                <span>Explore Full Collection</span>
+                <i className="fa-solid fa-arrow-right text-xs group-hover:translate-x-1 transition-transform"></i>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+              {newArrivals.map((book) => (
                 <BookCard
                   key={book.id}
                   book={book}
@@ -577,7 +808,7 @@ export default function App() {
                 <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 shadow-sm">
                   <i className="fa-regular fa-folder-open text-4xl text-slate-300 mb-3"></i>
                   <h3 className="font-serif font-bold text-xl text-slate-900 mb-1">
-                    No Books Matched Your Filters
+                    Nothing matched that search.
                   </h3>
                   <p className="text-xs text-slate-500 max-w-sm mx-auto mb-6">
                     Try broadening your price range, searching a different keyword, or resetting the category shelf.
@@ -609,6 +840,7 @@ export default function App() {
             books={books}
             onAddToCart={addToCart}
             onQuickView={(b) => setQuickViewBook(b)}
+            onToggleWishlist={toggleWishlist}
           />
         </main>
       )}
@@ -616,27 +848,63 @@ export default function App() {
       {/* ================= VIEW: ADMIN DASHBOARD ================= */}
       {activeView === 'admin' && (
         <main className="flex-1">
-          <AdminDashboard
-            books={books}
-            onUpdateBookStock={handleUpdateBookStock}
-            onAddBook={handleAddBook}
-            onDeleteBook={handleDeleteBook}
-            onUpdateBook={handleUpdateBook}
-          />
+          {currentUser?.role === 'admin' ? (
+            <AdminDashboard
+              books={books}
+              onUpdateBookStock={handleUpdateBookStock}
+              onAddBook={handleAddBook}
+              onDeleteBook={handleDeleteBook}
+              onUpdateBook={handleUpdateBook}
+            />
+          ) : (
+            <div className="max-w-md mx-auto my-16 p-8 bg-white rounded-3xl border border-slate-200 shadow-xl text-center space-y-4">
+              <div className="w-16 h-16 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto text-2xl">
+                <i className="fa-solid fa-shield-halved"></i>
+              </div>
+              <h2 className="font-serif font-bold text-2xl text-slate-900">Administrator Access Required</h2>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                You must be authenticated with verified administrative credentials (admin@booknest.com) to access the warehouse control tower.
+              </p>
+              <button
+                onClick={() => setIsAuthOpen(true)}
+                className="w-full py-3 rounded-xl bg-slate-900 hover:bg-amber-600 text-amber-50 hover:text-slate-950 font-bold text-xs shadow-md transition-colors"
+              >
+                Sign In as Administrator
+              </button>
+            </div>
+          )}
         </main>
       )}
 
       {/* ================= VIEW: ORDERS & TRACKING ================= */}
       {activeView === 'orders' && (
         <main className="flex-1 max-w-5xl mx-auto px-4 sm:px-6 py-10 w-full">
-          <OrdersView
-            orders={placedOrders}
-            onNavigateToCatalog={() => setActiveView('catalog')}
-            onOrderAgain={(book) => {
-              addToCart(book, 1);
-              setIsCartOpen(true);
-            }}
-          />
+          {currentUser ? (
+            <OrdersView
+              orders={placedOrders}
+              onNavigateToCatalog={() => setActiveView('catalog')}
+              onOrderAgain={(book) => {
+                addToCart(book, 1);
+                setIsCartOpen(true);
+              }}
+            />
+          ) : (
+            <div className="max-w-md mx-auto my-16 p-8 bg-white rounded-3xl border border-slate-200 shadow-xl text-center space-y-4">
+              <div className="w-16 h-16 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto text-2xl">
+                <i className="fa-solid fa-box-open"></i>
+              </div>
+              <h2 className="font-serif font-bold text-2xl text-slate-900">Sign In to View Orders</h2>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Your order invoices and delivery dispatch tracking are linked to your campus account.
+              </p>
+              <button
+                onClick={() => setIsAuthOpen(true)}
+                className="w-full py-3 rounded-xl bg-slate-900 hover:bg-amber-600 text-amber-50 hover:text-slate-950 font-bold text-xs shadow-md transition-colors"
+              >
+                Sign In / Register
+              </button>
+            </div>
+          )}
         </main>
       )}
 
@@ -665,6 +933,11 @@ export default function App() {
         appliedCoupon={appliedCoupon}
         onUpdateQty={updateCartQty}
         onRemoveItem={removeCartItem}
+        onSaveForLater={(book) => {
+          toggleWishlist(book.id, book.title);
+          removeCartItem(book.id, book.title);
+          showToast(`Saved "${book.title}" to reading list`, 'success');
+        }}
         onApplyCoupon={(code) => {
           setAppliedCoupon(code);
           showToast(`Coupon "${code}" applied successfully!`, 'success');
@@ -695,6 +968,15 @@ export default function App() {
         books={books}
         summary={cartSummaryData}
         onOrderSuccess={handleOrderSuccess}
+        currentUser={currentUser}
+        onOpenAuth={() => setIsAuthOpen(true)}
+      />
+
+      {/* ================= AUTHENTICATION MODAL ================= */}
+      <AuthModal
+        isOpen={isAuthOpen}
+        onClose={() => setIsAuthOpen(false)}
+        onAuthSuccess={handleAuthSuccess}
       />
 
       {/* ================= QUICK VIEW BOOK MODAL ================= */}
@@ -704,6 +986,10 @@ export default function App() {
         isWishlisted={quickViewBook ? wishlist.includes(quickViewBook.id) : false}
         onToggleWishlist={toggleWishlist}
         onAddToCart={addToCart}
+        currentUser={currentUser}
+        onOpenAuth={() => setIsAuthOpen(true)}
+        allBooks={books}
+        onSelectBook={(b) => setQuickViewBook(b)}
       />
 
       {/* ================= TOAST NOTIFICATION ================= */}

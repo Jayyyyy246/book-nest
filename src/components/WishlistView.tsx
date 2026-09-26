@@ -30,17 +30,17 @@ export const WishlistView: React.FC<WishlistViewProps> = ({
           <div className="w-20 h-20 bg-rose-50 text-rose-500 rounded-full flex items-center justify-center mx-auto mb-6 text-3xl">
             ♡
           </div>
-          <h2 className="font-serif text-2xl font-bold text-zinc-900 mb-2">
-            Your wishlist is empty
-          </h2>
+          <h1 className="font-serif text-2xl font-bold text-zinc-900 mb-2">
+            Your reading list is waiting.
+          </h1>
           <p className="text-sm text-zinc-500 mb-8 max-w-sm mx-auto leading-relaxed">
-            Click the heart icon on any title while browsing the catalog to save it for later.
+            Click the heart icon on any title while exploring the catalog to save it to your personal reading list.
           </p>
           <button
             onClick={onNavigateToCatalog}
-            className="px-6 py-3 rounded-xl bg-blue-900 hover:bg-blue-950 text-white font-semibold text-sm transition-all shadow-md inline-flex items-center gap-2"
+            className="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-sm transition-all shadow-md inline-flex items-center gap-2"
           >
-            <span>Discover Books</span>
+            <span>Explore Bookstore Catalog</span>
             <ArrowRight className="w-4 h-4" />
           </button>
         </div>

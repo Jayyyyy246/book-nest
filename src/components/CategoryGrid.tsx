@@ -1,14 +1,17 @@
 import React from 'react';
 import { CATEGORIES } from '../data/bookCatalog';
+import { Book } from '../types';
 
 interface CategoryGridProps {
   selectedCategory: string;
   onSelectCategory: (slug: string) => void;
+  books?: Book[];
 }
 
 export const CategoryGrid: React.FC<CategoryGridProps> = ({
   selectedCategory,
   onSelectCategory,
+  books = [],
 }) => {
   return (
     <section className="py-12 bg-white border-b border-slate-200/70">
@@ -34,6 +37,13 @@ export const CategoryGrid: React.FC<CategoryGridProps> = ({
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
           {CATEGORIES.filter(c => c.slug !== 'all').map((category) => {
             const isSelected = selectedCategory === category.slug;
+            const liveCount = books.length > 0
+              ? books.filter(b => 
+                  b.category.toLowerCase().includes(category.slug.toLowerCase()) || 
+                  b.category.toLowerCase() === category.name.toLowerCase()
+                ).length
+              : category.count;
+
             return (
               <div
                 key={category.slug}
@@ -55,7 +65,7 @@ export const CategoryGrid: React.FC<CategoryGridProps> = ({
                     </div>
 
                     <span className="px-2.5 py-1 rounded-full bg-white border border-slate-200 text-xs font-semibold text-slate-600 shadow-2xs group-hover:border-amber-300">
-                      {category.count} Titles
+                      {liveCount} {liveCount === 1 ? 'Title' : 'Titles'}
                     </span>
                   </div>
 

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Book, CartSummaryData } from '../types';
+import { api } from '../api';
 
 export interface CheckoutAddress {
   fullName: string;
@@ -16,6 +17,8 @@ interface CheckoutFlowModalProps {
   books: Book[];
   summary: CartSummaryData;
   onOrderSuccess: (orderId: number, details: any) => void;
+  currentUser?: any;
+  onOpenAuth?: () => void;
 }
 
 export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
@@ -25,13 +28,15 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
   books,
   summary,
   onOrderSuccess,
+  currentUser,
+  onOpenAuth,
 }) => {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [address, setAddress] = useState<CheckoutAddress>({
-    fullName: 'Aditya Chauhan',
+    fullName: currentUser?.name || 'Aditya Chauhan',
     hostelBlock: 'Aryabhata Academic Hall (Block C)',
     roomNo: 'Room 314',
-    phone: '+91 98765 43210',
+    phone: currentUser?.phone || '+91 98765 43210',
     deliveryNotes: 'Please ring hostel buzzer or leave at reception desk.'
   });
 
@@ -40,7 +45,17 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
   const [cardExpiry, setCardExpiry] = useState('08/28');
   const [cardCvv, setCardCvv] = useState('834');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [completedOrder, setCompletedOrder] = useState<any | null>(null);
+
+  // Close on Escape key
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -53,34 +68,30 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
     })
     .filter(item => item.book !== undefined) as { id: number; book: Book; quantity: number }[];
 
-  const handlePlaceOrder = () => {
-    setIsProcessing(true);
-    setTimeout(() => {
-      const newOrderId = Math.floor(100000 + Math.random() * 900000);
-      const orderDetails = {
-        orderId: newOrderId,
-        date: new Date().toLocaleDateString('en-IN', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        }),
-        address,
-        paymentMethod,
-        items: cartItems.map(item => ({
-          book: item.book,
-          quantity: item.quantity,
-          unitPrice: Math.round(item.book.price * (1 - item.book.discount / 100)),
-          lineTotal: Math.round(item.book.price * (1 - item.book.discount / 100)) * item.quantity
-        })),
-        summary
-      };
+  const handlePlaceOrder = async () => {
+    if (!currentUser) {
+      if (onOpenAuth) onOpenAuth();
+      return;
+    }
 
-      setCompletedOrder(orderDetails);
+    setIsProcessing(true);
+    setErrorMessage(null);
+
+    try {
+      const response = await api.placeOrder({
+        address,
+        paymentMethod: paymentMethod.toUpperCase(),
+        items: cartItems.map(item => ({ bookId: item.book.id, quantity: item.quantity })),
+        summary
+      });
+
+      setCompletedOrder(response.order);
+      onOrderSuccess(response.order.id, response.order);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to place order. Please check inventory stock.');
+    } finally {
       setIsProcessing(false);
-      onOrderSuccess(newOrderId, orderDetails);
-    }, 1500);
+    }
   };
 
   const handlePrint = () => {
@@ -96,11 +107,16 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
         {/* Modal Top Header */}
         <div className="bg-[#FAF8F5] p-6 border-b border-slate-200/80 flex items-center justify-between">
           <div>
-            <span className="text-[11px] font-bold text-amber-700 uppercase tracking-widest flex items-center gap-1.5">
-              <i className="fa-solid fa-lock text-xs text-amber-600"></i>
-              256-Bit Encrypted Campus Checkout
-            </span>
-            <h2 className="font-serif font-black text-2xl text-slate-900 mt-0.5">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[11px] font-bold text-amber-700 uppercase tracking-widest flex items-center gap-1.5">
+                <i className="fa-solid fa-lock text-xs text-amber-600"></i>
+                Campus Order Fulfillment
+              </span>
+              <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-bold">
+                DEMO PAYMENT
+              </span>
+            </div>
+            <h2 className="font-serif font-black text-2xl text-slate-900">
               {completedOrder ? 'Tax Invoice & Order Manifest' : 'Campus Order Placement'}
             </h2>
           </div>
@@ -112,6 +128,13 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
             <i className="fa-solid fa-xmark text-sm"></i>
           </button>
         </div>
+
+        {errorMessage && (
+          <div className="mx-6 mt-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+            <i className="fa-solid fa-circle-exclamation text-rose-600"></i>
+            <span>{errorMessage}</span>
+          </div>
+        )}
 
         {/* ================= COMPLETED ORDER RECEIPT VIEW ================= */}
         {completedOrder ? (
@@ -127,7 +150,7 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
                   Order Successfully Dispatched!
                 </h3>
                 <p className="text-xs text-emerald-800 mt-0.5">
-                  Order reference <span className="font-mono font-bold">#BN-{completedOrder.orderId}</span> is confirmed. Expected campus delivery within 25 minutes.
+                  Order reference <span className="font-mono font-bold">#BN-{completedOrder.orderNumber || completedOrder.id}</span> is confirmed. Expected campus delivery within 25 minutes.
                 </p>
               </div>
             </div>
@@ -144,7 +167,7 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
                   <p className="text-[11px] text-slate-500">Student Delivery Manifest</p>
                 </div>
                 <div className="text-right">
-                  <div className="font-mono font-bold text-sm text-slate-900">#BN-{completedOrder.orderId}</div>
+                  <div className="font-mono font-bold text-sm text-slate-900">#BN-{completedOrder.orderNumber || completedOrder.id}</div>
                   <div className="text-slate-500 text-[11px]">{completedOrder.date}</div>
                   <span className="inline-block mt-1 px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold text-[10px]">
                     PAID ({completedOrder.paymentMethod.toUpperCase()})
@@ -156,7 +179,7 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
               <div className="grid grid-cols-2 gap-4 pb-4 border-b border-amber-200/60">
                 <div>
                   <div className="font-bold text-slate-900 mb-1">Delivered To:</div>
-                  <div className="text-slate-700">{completedOrder.address.fullName}</div>
+                  <div className="text-slate-700">{completedOrder.address.name || completedOrder.address.fullName}</div>
                   <div className="text-slate-600">{completedOrder.address.hostelBlock}, {completedOrder.address.roomNo}</div>
                   <div className="text-slate-600">Contact: {completedOrder.address.phone}</div>
                 </div>
@@ -187,7 +210,7 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
               {/* Grand Total Row */}
               <div className="pt-2 flex justify-between items-baseline font-serif text-base font-bold text-slate-950">
                 <span>Grand Total (All Taxes Included)</span>
-                <span className="font-mono text-xl text-amber-900">₹{completedOrder.summary.grandTotal}</span>
+                <span className="font-mono text-xl text-amber-900">₹{completedOrder.summary?.grandTotal ?? completedOrder.total ?? 0}</span>
               </div>
             </div>
 
@@ -205,7 +228,7 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
                 onClick={onClose}
                 className="flex-1 py-3 rounded-2xl bg-slate-900 hover:bg-amber-600 text-amber-50 hover:text-slate-950 font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-all"
               >
-                <span>Return to Bookstore</span>
+                <span>View All Orders</span>
                 <i className="fa-solid fa-arrow-right text-xs"></i>
               </button>
             </div>
@@ -393,6 +416,17 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
             {/* STEP 3: Payment Options (UPI QR / Card / COD) */}
             {step === 3 && (
               <div className="space-y-5 animate-in fade-in duration-150">
+                {/* Transparent Payment Environment Notice */}
+                <div className="p-3.5 rounded-2xl bg-amber-50/90 border border-amber-300 text-amber-950 text-xs flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-amber-200 text-amber-900 flex items-center justify-center shrink-0">
+                    <i className="fa-solid fa-circle-info text-sm"></i>
+                  </div>
+                  <div>
+                    <span className="font-bold block">Campus Sandbox Environment</span>
+                    <span className="text-amber-800">Demo payment — no real money will be charged.</span>
+                  </div>
+                </div>
+
                 {/* Payment Option Selector */}
                 <div className="grid grid-cols-3 gap-3">
                   {[

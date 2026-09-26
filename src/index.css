@@ -84,3 +84,23 @@
 .animate-float {
   animation: floatSlow 4s ease-in-out infinite;
 }
+
+/* Print styles for campus tax invoice */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #printable-invoice, #printable-invoice * {
+    visibility: visible;
+  }
+  #printable-invoice {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 24px;
+    background: white !important;
+    border: none !important;
+  }
+}

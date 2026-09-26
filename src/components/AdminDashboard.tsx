@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Book } from '../types';
+import { api } from '../api';
 
 interface OrderItem {
   id: number;
@@ -33,14 +34,41 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isAddBookModalOpen, setIsAddBookModalOpen] = useState(false);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
 
-  // Sample order dispatch pipeline
-  const [orders, setOrders] = useState<OrderItem[]>([
-    { id: 104821, customerName: 'Aditya Chauhan', room: 'Aryabhata Hall, Room 314', total: 1148, status: 'Confirmed', date: 'Today, 10:15 AM', itemsCount: 2, payment: 'UPI' },
-    { id: 104820, customerName: 'Priya Sharma', room: 'Gargi Hostel, Room 102', total: 699, status: 'Processing', date: 'Today, 09:40 AM', itemsCount: 1, payment: 'CARD' },
-    { id: 104819, customerName: 'Rohan Verma', room: 'Bhabha Hostel, Room 418', total: 1420, status: 'Shipped', date: 'Yesterday, 04:30 PM', itemsCount: 3, payment: 'COD' },
-    { id: 104818, customerName: 'Sneha Patel', room: 'Sarojini Hall, Room 205', total: 449, status: 'Delivered', date: 'Yesterday, 02:15 PM', itemsCount: 1, payment: 'UPI' },
-    { id: 104817, customerName: 'Karan Mehra', room: 'Tagore Hostel, Room 112', total: 899, status: 'Delivered', date: '24 Sep, 11:20 AM', itemsCount: 1, payment: 'CARD' },
-  ]);
+  // Live order dispatch pipeline
+  const [orders, setOrders] = useState<OrderItem[]>([]);
+  const [metrics, setMetrics] = useState<{
+    totalRevenue: number;
+    totalOrders: number;
+    totalBooks: number;
+    totalStockUnits: number;
+    lowStockCount: number;
+  }>({
+    totalRevenue: 0,
+    totalOrders: 0,
+    totalBooks: books.length,
+    totalStockUnits: books.reduce((acc, b) => acc + b.stock, 0),
+    lowStockCount: books.filter(b => b.stock <= 10).length
+  });
+
+  const loadAdminData = () => {
+    // 1. Fetch live metrics
+    api.getAdminMetrics()
+      .then(res => setMetrics(res.metrics))
+      .catch(() => {});
+
+    // 2. Fetch live orders
+    api.getAdminOrders()
+      .then(res => {
+        if (res.orders && res.orders.length > 0) {
+          setOrders(res.orders);
+        }
+      })
+      .catch(() => {});
+  };
+
+  React.useEffect(() => {
+    loadAdminData();
+  }, []);
 
   // Form state for adding/editing book
   const [formTitle, setFormTitle] = useState('');
@@ -52,7 +80,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [formCover, setFormCover] = useState('https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=600&auto=format&fit=crop&q=80');
 
   // KPI calculations
-  const totalRevenue = 142850;
+  const totalRevenue = metrics.totalRevenue;
   const totalBooksInCatalog = books.length;
   const lowStockBooks = books.filter(b => b.stock <= 10);
   const totalStockUnits = books.reduce((acc, b) => acc + b.stock, 0);
@@ -65,8 +93,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     b.isbn.includes(searchTableQuery)
   );
 
-  const handleStatusChange = (orderId: number, newStatus: OrderItem['status']) => {
+  const handleStatusChange = async (orderId: number, newStatus: OrderItem['status']) => {
     setOrders(orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
+    try {
+      await api.updateAdminOrderStatus(orderId, newStatus);
+      loadAdminData();
+    } catch (e) {
+      console.warn('Failed to update status on server:', e);
+    }
   };
 
   const openEditModal = (book: Book) => {
@@ -210,17 +244,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 {
                   label: 'Gross Campus Revenue',
                   value: `₹${totalRevenue.toLocaleString()}`,
-                  trend: '+18.4%',
+                  trend: `${orders.length} Orders`,
                   trendUp: true,
-                  sub: 'vs. last month',
+                  sub: 'Live SQLite ledger',
                   icon: 'fa-solid fa-indian-rupee-sign',
                   color: 'text-amber-500',
                   bg: isDark ? 'bg-amber-950/40 border-amber-800/40' : 'bg-amber-50/70 border-amber-200/80'
                 },
                 {
                   label: 'Active Dispatches',
-                  value: orders.filter(o => o.status !== 'Delivered').length.toString(),
-                  trend: '3 Pending',
+                  value: orders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length.toString(),
+                  trend: `${orders.filter(o => o.status === 'Confirmed' || o.status === 'Processing').length} In Flight`,
                   trendUp: true,
                   sub: 'Campus Couriers',
                   icon: 'fa-solid fa-box-open',
@@ -232,7 +266,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   value: totalStockUnits.toString(),
                   trend: `${totalBooksInCatalog} Titles`,
                   trendUp: true,
-                  sub: 'Across 6 genres',
+                  sub: 'Live Warehouse Stock',
                   icon: 'fa-solid fa-book-open',
                   color: 'text-purple-500',
                   bg: isDark ? 'bg-purple-950/40 border-purple-800/40' : 'bg-purple-50/70 border-purple-200/80'
@@ -240,9 +274,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 {
                   label: 'Low Stock Alerts',
                   value: lowStockBooks.length.toString(),
-                  trend: 'Immediate Action',
-                  trendUp: false,
-                  sub: 'Stock < 10 units',
+                  trend: lowStockBooks.length > 0 ? 'Requires Restock' : 'Healthy Inventory',
+                  trendUp: lowStockBooks.length === 0,
+                  sub: 'Stock ≤ 10 units',
                   icon: 'fa-solid fa-triangle-exclamation',
                   color: 'text-rose-500',
                   bg: isDark ? 'bg-rose-950/40 border-rose-800/40' : 'bg-rose-50/70 border-rose-200/80'
@@ -273,72 +307,87 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               ))}
             </div>
 
-            {/* Dynamic CSS/SVG Analytics Charts */}
+            {/* Dynamic Real Analytics Charts */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               
-              {/* Revenue Trends Monthly Bar Chart */}
+              {/* Real Order & Sales Volume Chart */}
               <div className={`lg:col-span-8 p-6 sm:p-8 rounded-3xl border shadow-sm ${
                 isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200/90'
               }`}>
                 <div className="flex items-center justify-between mb-6">
                   <div>
-                    <h3 className="font-serif font-bold text-lg">Monthly Revenue Trends</h3>
-                    <p className="text-xs text-slate-500">Student textbook purchase velocity (INR)</p>
+                    <h3 className="font-serif font-bold text-lg">Sales Velocity &amp; Revenue Activity</h3>
+                    <p className="text-xs text-slate-500">Real transaction volume derived from campus orders</p>
                   </div>
                   <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800">
-                    +24.8% Academic Year Growth
+                    Live Database Records
                   </span>
                 </div>
 
-                {/* SVG / CSS Bar Chart */}
-                <div className="h-64 flex items-end gap-3 sm:gap-6 pt-6 pb-2 border-b border-slate-200/60">
-                  {[
-                    { month: 'Apr', val: 55, rev: '₹55k' },
-                    { month: 'May', val: 68, rev: '₹68k' },
-                    { month: 'Jun', val: 45, rev: '₹45k' },
-                    { month: 'Jul', val: 82, rev: '₹82k' },
-                    { month: 'Aug', val: 110, rev: '₹1.1L' },
-                    { month: 'Sep', val: 142, rev: '₹1.42L' },
-                  ].map((bar) => (
-                    <div key={bar.month} className="flex-1 flex flex-col items-center gap-2 group h-full justify-end">
-                      <span className="text-[10px] font-mono text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity">
-                        {bar.rev}
-                      </span>
-                      <div
-                        className="w-full bg-gradient-to-t from-amber-600 to-amber-400 rounded-t-xl transition-all duration-500 group-hover:from-amber-500 group-hover:to-amber-300 shadow-sm"
-                        style={{ height: `${(bar.val / 150) * 100}%` }}
-                      />
-                      <span className="text-xs font-bold text-slate-600">{bar.month}</span>
+                {/* SVG / CSS Bar Chart using real order data */}
+                {orders.length > 0 ? (
+                  <div className="space-y-4">
+                    <div className="h-64 flex items-end gap-3 sm:gap-6 pt-6 pb-2 border-b border-slate-200/60">
+                      {orders.slice(0, 6).reverse().map((order) => {
+                        const maxOrder = Math.max(...orders.slice(0, 6).map(o => o.total || 1), 1000);
+                        const pct = Math.min(100, Math.max(15, Math.round(((order.total || 0) / maxOrder) * 100)));
+                        return (
+                          <div key={order.id} className="flex-1 flex flex-col items-center gap-2 group h-full justify-end">
+                            <span className="text-[10px] font-mono text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                              ₹{order.total}
+                            </span>
+                            <div
+                              className="w-full bg-gradient-to-t from-amber-600 to-amber-400 rounded-t-xl transition-all duration-300 group-hover:from-amber-500 group-hover:to-amber-300 shadow-xs"
+                              style={{ height: `${pct}%` }}
+                            />
+                            <span className="text-[11px] font-bold text-slate-600 truncate max-w-[60px]">
+                              #{order.id}
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
-                  ))}
-                </div>
+                    <div className="flex justify-between text-[11px] text-slate-400 font-mono">
+                      <span>Recent Orders Timeline</span>
+                      <span>Order Total (₹)</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="h-64 flex flex-col items-center justify-center text-center p-6 text-slate-400">
+                    <i className="fa-solid fa-chart-simple text-3xl mb-2 text-slate-300"></i>
+                    <p className="text-xs">No orders recorded in database yet.</p>
+                    <p className="text-[11px] text-slate-400 mt-1">When students complete checkout, real sales trends will display here.</p>
+                  </div>
+                )}
               </div>
 
-              {/* Genre Sales Breakdown */}
+              {/* Real Genre Distribution Breakdown */}
               <div className={`lg:col-span-4 p-6 sm:p-8 rounded-3xl border shadow-sm ${
                 isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200/90'
               }`}>
-                <h3 className="font-serif font-bold text-lg mb-1">Sales by Genre</h3>
-                <p className="text-xs text-slate-500 mb-6">Top performing campus disciplines</p>
+                <h3 className="font-serif font-bold text-lg mb-1">Catalog by Category</h3>
+                <p className="text-xs text-slate-500 mb-6">Real database title distribution</p>
 
                 <div className="space-y-4">
-                  {[
-                    { genre: 'Computer Science', pct: 42, color: 'bg-indigo-500' },
-                    { genre: 'Self Help & Psychology', pct: 24, color: 'bg-amber-500' },
-                    { genre: 'Fiction & Classics', pct: 18, color: 'bg-rose-500' },
-                    { genre: 'Science Fiction', pct: 10, color: 'bg-purple-500' },
-                    { genre: 'Business & Finance', pct: 6, color: 'bg-emerald-500' },
-                  ].map((g) => (
-                    <div key={g.genre} className="space-y-1">
-                      <div className="flex justify-between text-xs font-semibold">
-                        <span>{g.genre}</span>
-                        <span className="font-mono text-slate-500">{g.pct}%</span>
-                      </div>
-                      <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                        <div className={`h-full ${g.color} rounded-full`} style={{ width: `${g.pct}%` }} />
-                      </div>
-                    </div>
-                  ))}
+                  {(() => {
+                    const map: Record<string, number> = {};
+                    books.forEach(b => { map[b.category] = (map[b.category] || 0) + 1; });
+                    const colors = ['bg-indigo-500', 'bg-amber-500', 'bg-emerald-500', 'bg-rose-500', 'bg-purple-500', 'bg-sky-500'];
+                    return Object.entries(map).map(([genre, count], idx) => {
+                      const pct = Math.round((count / (books.length || 1)) * 100);
+                      return (
+                        <div key={genre} className="space-y-1">
+                          <div className="flex justify-between text-xs font-semibold">
+                            <span>{genre}</span>
+                            <span className="font-mono text-slate-500">{count} titles ({pct}%)</span>
+                          </div>
+                          <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                            <div className={`h-full ${colors[idx % colors.length]} rounded-full`} style={{ width: `${pct}%` }} />
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
                 </div>
               </div>
 
