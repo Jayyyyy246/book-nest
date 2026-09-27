@@ -14,6 +14,18 @@ export function setStoredToken(token: string | null) {
   }
 }
 
+export class ApiError extends Error {
+  status: number;
+  data: any;
+
+  constructor(message: string, status: number, data?: any) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.data = data;
+  }
+}
+
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = getStoredToken();
   const headers: Record<string, string> = {
@@ -33,7 +45,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(data.error || `Request failed with status ${response.status}`);
+    throw new ApiError(data?.error || `Request failed with status ${response.status}`, response.status, data);
   }
 
   return data as T;
@@ -213,49 +225,79 @@ export const api = {
     }),
 
   // Scanner
-  scanIsbn: (isbn: string) =>
-    request<{
-      success: boolean;
-      matched: boolean;
-      matchType: string;
-      confidence: number;
-      evidence: string;
-      book: Book;
-      candidates?: any[];
-      isLocalCatalog?: boolean;
-    }>('/api/scanner/isbn', {
-      method: 'POST',
-      body: JSON.stringify({ isbn }),
-    }),
+  scanIsbn: async (isbn: string) => {
+    try {
+      return await request<{
+        success: boolean;
+        matched: boolean;
+        matchType: string;
+        confidence: number;
+        evidence: string;
+        book?: Book | null;
+        candidates?: any[];
+        isLocalCatalog?: boolean;
+        error?: string;
+        detectedIsbn?: string;
+      }>('/api/scanner/isbn', {
+        method: 'POST',
+        body: JSON.stringify({ isbn }),
+      });
+    } catch (err: any) {
+      if (err instanceof ApiError && err.data) {
+        return err.data;
+      }
+      throw err;
+    }
+  },
 
-  scanVision: (imageBase64: string, mimeType?: string) =>
-    request<{
-      success: boolean;
-      matched: boolean;
-      matchType: string;
-      confidence: number;
-      evidence: string;
-      book: Book | null;
-      candidates?: any[];
-      detectedMetadata?: any;
-    }>('/api/scanner/analyze', {
-      method: 'POST',
-      body: JSON.stringify({ imageBase64, mimeType }),
-    }),
+  scanVision: async (imageBase64: string, mimeType?: string) => {
+    try {
+      return await request<{
+        success: boolean;
+        matched: boolean;
+        matchType: string;
+        confidence: number;
+        evidence: string;
+        book?: Book | null;
+        candidates?: any[];
+        detectedMetadata?: any;
+        isLocalCatalog?: boolean;
+        error?: string;
+      }>('/api/scanner/analyze', {
+        method: 'POST',
+        body: JSON.stringify({ imageBase64, mimeType }),
+      });
+    } catch (err: any) {
+      if (err instanceof ApiError && err.data) {
+        return err.data;
+      }
+      throw err;
+    }
+  },
 
-  matchText: (query: string) =>
-    request<{
-      success: boolean;
-      matched: boolean;
-      matchType: string;
-      confidence: number;
-      evidence: string;
-      book: Book | null;
-      candidates?: any[];
-    }>('/api/scanner/match-text', {
-      method: 'POST',
-      body: JSON.stringify({ query }),
-    }),
+  matchText: async (queryOrData: string | { query?: string; title?: string; author?: string; isbn?: string; rawTextLines?: string[] }) => {
+    try {
+      const body = typeof queryOrData === 'string' ? { query: queryOrData } : queryOrData;
+      return await request<{
+        success: boolean;
+        matched: boolean;
+        matchType: string;
+        confidence: number;
+        evidence: string;
+        book?: Book | null;
+        candidates?: any[];
+        error?: string;
+      }>('/api/scanner/match-text', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    } catch (err: any) {
+      if (err instanceof ApiError && err.data) {
+        return err.data;
+      }
+      throw err;
+    }
+  },
 
   // Admin
   getAdminMetrics: () => request<{ metrics: any }>('/api/admin/metrics'),

@@ -13,4 +13,5 @@ export const config = {
   uploadLimit: '10mb',
   openLibraryBaseUrl: 'https://openlibrary.org/api/books',
   defaultPageLimit: 50,
+  geminiApiKey: process.env.GEMINI_API_KEY || '',
 };

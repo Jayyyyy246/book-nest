@@ -13,7 +13,14 @@ export type ScannerState =
   | 'ocr-processing' 
   | 'searching' 
   | 'matched' 
+  | 'not-stocked'
   | 'multiple-matches' 
+  | 'text-unclear'
+  | 'no-book-detected'
+  | 'vision-unconfigured'
+  | 'camera-denied'
+  | 'camera-unavailable'
+  | 'invalid-image'
   | 'no-match' 
   | 'error';
 
@@ -124,6 +131,12 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const barcodeScanIntervalRef = useRef<any>(null);
 
+  // BUG 1: Synchronized ref to prevent stale React closures inside barcode intervals
+  const scannerStateRef = useRef<ScannerState>('idle');
+  useEffect(() => {
+    scannerStateRef.current = scannerState;
+  }, [scannerState]);
+
   // Clean up media stream and timers on unmount
   useEffect(() => {
     return () => {
@@ -153,18 +166,21 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
     setCameraError(null);
     setGeneralError(null);
     setPreviewImage(null);
+    setMatchedBook(null);
+    setCandidates([]);
+    setDetectedMetadata(null);
     setScannerMode('camera');
     setScannerState('camera-starting');
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setCameraError('Camera access is not supported by your current browser. Please upload an image instead.');
-      setScannerState('error');
+      const msg = 'Camera access is not supported by your current browser. Please upload an image instead.';
+      setCameraError(msg);
+      setScannerState('camera-unavailable');
       return;
     }
 
     try {
-      // Request camera permission only after explicit user interaction
-      // Prefer rear/environment camera on mobile
+      // Prefer rear/environment camera on mobile, but gracefully fall back
       const constraints: MediaStreamConstraints = {
         video: {
           facingMode: { ideal: 'environment' },
@@ -174,7 +190,15 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
         audio: false,
       };
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (constraintErr: any) {
+        // Fall back gracefully if ideal constraints failed
+        console.warn('Initial camera constraints failed, falling back to basic video constraint:', constraintErr);
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+
       mediaStreamRef.current = stream;
 
       if (videoRef.current) {
@@ -187,15 +211,20 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
       }
     } catch (err: any) {
       console.warn('Camera access error:', err);
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setCameraError('Camera permission was denied. Please allow camera access in your browser settings, or use image upload below.');
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        setCameraError('No camera hardware found on this device. Please upload a book cover photo instead.');
-      } else {
-        setCameraError(err.message || 'Unable to start camera preview. Please upload an image instead.');
-      }
-      setScannerState('error');
       stopCameraStream();
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        const msg = 'Camera permission was denied. Please allow camera access in your browser settings, or use image upload below.';
+        setCameraError(msg);
+        setScannerState('camera-denied');
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError' || err.name === 'NotReadableError') {
+        const msg = 'No camera hardware found or device is already in use. Please upload a book cover photo instead.';
+        setCameraError(msg);
+        setScannerState('camera-unavailable');
+      } else {
+        const msg = err.message || 'Unable to start camera preview. Please upload an image instead.';
+        setCameraError(msg);
+        setScannerState('error');
+      }
     }
   };
 
@@ -205,7 +234,13 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
   };
 
   // Real-time Barcode Detector loop (Web standard BarcodeDetector API)
+  // BUG 1 Fix: uses scannerStateRef.current, clears interval before starting
   const initRealtimeBarcodeDetection = () => {
+    if (barcodeScanIntervalRef.current) {
+      clearInterval(barcodeScanIntervalRef.current);
+      barcodeScanIntervalRef.current = null;
+    }
+
     if (!('BarcodeDetector' in window)) return;
 
     try {
@@ -216,8 +251,8 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
       barcodeScanIntervalRef.current = setInterval(async () => {
         if (
           videoRef.current && 
-          videoRef.current.readyState === 4 && 
-          scannerState === 'camera-ready'
+          videoRef.current.readyState >= 2 && 
+          scannerStateRef.current === 'camera-ready'
         ) {
           try {
             const barcodes = await barcodeDetector.detect(videoRef.current);
@@ -237,25 +272,35 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
   };
 
   // Freeze/Capture Camera Frame
+  // BUG 7 Fix: actual videoWidth/Height, check readyState >= 2, no upscaling, high JPEG quality
   const captureFrame = () => {
     if (!videoRef.current || !canvasRef.current) return;
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
+
+    if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+      setGeneralError('Camera video feed is still stabilizing. Please wait a moment before capturing.');
+      return;
+    }
+
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+    canvas.width = width;
+    canvas.height = height;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    ctx.drawImage(video, 0, 0, width, height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
 
     stopCameraStream();
     setPreviewImage(dataUrl);
     setPreviewMimeType('image/jpeg');
     setScannerMode('camera');
     setScannerState('captured');
+    setGeneralError(null);
   };
 
   // Retake photo / Resume camera
@@ -264,10 +309,12 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
     setMatchedBook(null);
     setCandidates([]);
     setGeneralError(null);
+    setDetectedMetadata(null);
     startCamera();
   };
 
   // 2. IMAGE UPLOAD LIFECYCLE
+  // BUG 8 Fix: strict upload validation, feeds identical pipeline
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -277,12 +324,13 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
     setCameraError(null);
     setMatchedBook(null);
     setCandidates([]);
+    setDetectedMetadata(null);
 
     // Validate file type
     const validMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
     if (!validMimes.includes(file.type.toLowerCase())) {
-      setGeneralError('Invalid image format. Please upload a JPG, JPEG, PNG, or WEBP file.');
-      setScannerState('error');
+      setGeneralError(`Unsupported image format (${file.type || 'unknown'}). Only JPG, JPEG, PNG, and WEBP files are supported.`);
+      setScannerState('invalid-image');
       return;
     }
 
@@ -290,7 +338,7 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
     const maxBytes = 10 * 1024 * 1024;
     if (file.size > maxBytes) {
       setGeneralError('Image size exceeds 10MB limit. Please upload a compressed or standard photo.');
-      setScannerState('error');
+      setScannerState('invalid-image');
       return;
     }
 
@@ -305,13 +353,14 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
 
     reader.onerror = () => {
       setGeneralError('Failed to read image file from disk.');
-      setScannerState('error');
+      setScannerState('invalid-image');
     };
 
     reader.readAsDataURL(file);
   };
 
   // 3. EXECUTE RECOGNITION PIPELINE ON PREVIEW IMAGE
+  // Implements full fallback order (BUG 2, BUG 3, BUG 4, BUG 8, BUG 9)
   const processImageRecognition = async () => {
     if (!previewImage) return;
 
@@ -319,6 +368,7 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
     setGeneralError(null);
     setMatchedBook(null);
     setCandidates([]);
+    setDetectedMetadata(null);
 
     // Step A: Attempt client-side BarcodeDetector on image if supported
     let detectedBarcode: string | null = null;
@@ -351,24 +401,51 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
 
       setDetectedMetadata(res.detectedMetadata || null);
 
+      // Handle Gemini configuration error (BUG 4)
+      if (res.matchType === 'VISION_CONFIGURATION_ERROR') {
+        setGeneralError(res.error || 'Gemini Vision is not configured on the backend.');
+        setScannerState('vision-unconfigured');
+        return;
+      }
+
+      // Handle no book in image (BUG 9 State 5)
+      if (res.matchType === 'NO_BOOK_DETECTED') {
+        setGeneralError(res.error || 'The image does not appear to contain a book cover or barcode.');
+        setScannerState('no-book-detected');
+        return;
+      }
+
+      // Handle blurry / unclear text (BUG 9 State 4)
+      if (res.matchType === 'TEXT_UNCLEAR') {
+        setGeneralError(res.error || 'Book cover detected, but printed text is too blurry to read.');
+        setScannerState('text-unclear');
+        return;
+      }
+
+      // Handle single confident match (Local or External)
       if (res.matched && res.book) {
         setMatchedBook(res.book);
         setMatchType(res.matchType);
         setCalculatedConfidence(res.confidence);
-        setMatchEvidence(res.evidence);
+        setMatchEvidence(res.evidence || '');
         setCandidates(res.candidates || []);
-        setScannerState('matched');
+        if (res.isLocalCatalog === false || res.book.stock === 0) {
+          setScannerState('not-stocked');
+        } else {
+          setScannerState('matched');
+        }
       } else if (res.candidates && res.candidates.length > 0) {
         setCandidates(res.candidates);
         setCalculatedConfidence(res.confidence);
-        setMatchEvidence(res.evidence);
+        setMatchEvidence(res.evidence || '');
         setScannerState('multiple-matches');
       } else {
+        setGeneralError(res.error || 'No catalog titles or external records matched the extracted text.');
         setScannerState('no-match');
       }
     } catch (err: any) {
-      setGeneralError(err.message || 'Optical machine vision analysis could not recognize a textbook cover in this image.');
-      setScannerState('no-match');
+      setGeneralError(err.message || 'Optical machine vision analysis failed.');
+      setScannerState('error');
     }
   };
 
@@ -389,8 +466,13 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
         setCalculatedConfidence(res.confidence || 1.0);
         setMatchEvidence(`Detected via ${source} barcode scan: ${res.evidence}`);
         setCandidates(res.candidates || []);
-        setScannerState('matched');
+        if (res.isLocalCatalog === false || res.book.stock === 0) {
+          setScannerState('not-stocked');
+        } else {
+          setScannerState('matched');
+        }
       } else {
+        setGeneralError(res.error || `No book found in catalog for barcode: ${rawCode}`);
         setScannerState('no-match');
       }
     } catch (err: any) {
@@ -410,6 +492,7 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
     setGeneralError(null);
     setMatchedBook(null);
     setCandidates([]);
+    setDetectedMetadata(null);
 
     const clean = manualQuery.trim();
     const isDigits = /^[0-9X-]+$/i.test(clean);
@@ -423,8 +506,13 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
           setCalculatedConfidence(res.confidence);
           setMatchEvidence(res.evidence);
           setCandidates(res.candidates || []);
-          setScannerState('matched');
+          if (res.isLocalCatalog === false || res.book.stock === 0) {
+            setScannerState('not-stocked');
+          } else {
+            setScannerState('matched');
+          }
         } else {
+          setGeneralError(res.error || `No catalog records found for ISBN "${clean}".`);
           setScannerState('no-match');
         }
       } else {
@@ -435,18 +523,23 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
           setCalculatedConfidence(res.confidence);
           setMatchEvidence(res.evidence);
           setCandidates(res.candidates || []);
-          setScannerState('matched');
+          if (res.book.stock === 0 || res.book.isLocalCatalog === false) {
+            setScannerState('not-stocked');
+          } else {
+            setScannerState('matched');
+          }
         } else if (res.candidates && res.candidates.length > 0) {
           setCandidates(res.candidates);
           setCalculatedConfidence(res.confidence);
           setMatchEvidence(res.evidence);
           setScannerState('multiple-matches');
         } else {
+          setGeneralError(res.error || `No titles matching "${clean}" found.`);
           setScannerState('no-match');
         }
       }
     } catch (err: any) {
-      setGeneralError(err.message || `No titles matching "${clean}" found.`);
+      setGeneralError(err.message || `Search failed for "${clean}".`);
       setScannerState('no-match');
     }
   };
@@ -461,6 +554,7 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
     setCalculatedConfidence(1.0);
     setMatchEvidence(`Preloaded campus demonstration sample (${book.title}). This sample does not invoke hardware vision.`);
     setCandidates([]);
+    setDetectedMetadata(null);
     setGeneralError(null);
     setScannerState('matched');
   };
@@ -474,6 +568,47 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
     setPreviewImage(null);
     setGeneralError(null);
     setCameraError(null);
+    setDetectedMetadata(null);
+  };
+
+  // Reusable Optical Readout Diagnostic Card (BUG 9)
+  const renderDetectedMetadata = () => {
+    if (!detectedMetadata) return null;
+    const hasFields = Boolean(
+      detectedMetadata.title ||
+      detectedMetadata.author ||
+      detectedMetadata.isbn ||
+      detectedMetadata.publisher ||
+      (detectedMetadata.rawTextLines && detectedMetadata.rawTextLines.length > 0)
+    );
+    if (!hasFields) return null;
+
+    return (
+      <div className="mt-4 p-3.5 rounded-2xl bg-slate-900 text-slate-100 text-left text-xs font-mono border border-slate-800 shadow-inner space-y-1">
+        <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-slate-800">
+          <span className="font-bold text-amber-400 uppercase text-[10px] tracking-wider flex items-center gap-1.5">
+            <i className="fa-solid fa-microchip"></i>
+            <span>Optical Vision Readout</span>
+          </span>
+          <span className="text-[10px] text-slate-400">Scanner Diagnostics</span>
+        </div>
+        {detectedMetadata.title && (
+          <div><span className="text-slate-400">Detected title:</span> <span className="text-amber-200 font-semibold">{detectedMetadata.title}</span></div>
+        )}
+        {detectedMetadata.author && (
+          <div><span className="text-slate-400">Detected author:</span> <span className="text-slate-200 font-semibold">{detectedMetadata.author}</span></div>
+        )}
+        {detectedMetadata.isbn && (
+          <div><span className="text-slate-400">Detected ISBN:</span> <span className="text-emerald-400 font-semibold">{detectedMetadata.isbn}</span></div>
+        )}
+        {detectedMetadata.publisher && (
+          <div><span className="text-slate-400">Detected publisher:</span> <span className="text-slate-200">{detectedMetadata.publisher}</span></div>
+        )}
+        {detectedMetadata.notes && (
+          <div><span className="text-slate-400">Extraction notes:</span> <span className="text-slate-300 italic">{detectedMetadata.notes}</span></div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -529,7 +664,8 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
                 scannerState === 'camera-ready' ? 'bg-emerald-500 animate-pulse' :
                 scannerState === 'processing' || scannerState === 'ocr-processing' || scannerState === 'searching' ? 'bg-amber-500 animate-ping' :
                 scannerState === 'matched' ? 'bg-emerald-600' :
-                scannerState === 'error' || scannerState === 'no-match' ? 'bg-rose-500' :
+                scannerState === 'not-stocked' ? 'bg-blue-600' :
+                scannerState === 'error' || scannerState === 'no-match' || scannerState === 'vision-unconfigured' || scannerState === 'camera-denied' ? 'bg-rose-500' :
                 'bg-slate-400'
               }`}></span>
               <span className="font-mono text-[11px] text-slate-800 font-bold uppercase">
@@ -540,8 +676,15 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
                 {scannerState === 'processing' && 'Analyzing Barcode...'}
                 {scannerState === 'ocr-processing' && 'Running Vision OCR...'}
                 {scannerState === 'searching' && 'Querying Catalog...'}
-                {scannerState === 'matched' && 'Match Confirmed'}
+                {scannerState === 'matched' && 'Book Found (In Stock)'}
+                {scannerState === 'not-stocked' && 'Book Identified (Not Stocked)'}
                 {scannerState === 'multiple-matches' && 'Possible Matches'}
+                {scannerState === 'text-unclear' && 'Text Unclear'}
+                {scannerState === 'no-book-detected' && 'No Book Detected'}
+                {scannerState === 'vision-unconfigured' && 'Vision Not Configured'}
+                {scannerState === 'camera-denied' && 'Camera Permission Denied'}
+                {scannerState === 'camera-unavailable' && 'Camera Unavailable'}
+                {scannerState === 'invalid-image' && 'Invalid Image'}
                 {scannerState === 'no-match' && 'No Match Found'}
                 {scannerState === 'error' && 'Scanner Exception'}
               </span>
@@ -737,14 +880,21 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
                 {scannerState === 'processing' && 'Checking hardware barcode detector...'}
                 {scannerState === 'ocr-processing' && 'Extracting title, author, and publisher...'}
                 {scannerState === 'searching' && 'Ranking candidates against local database...'}
-                {scannerState === 'matched' && (matchEvidence || 'Book successfully identified.')}
+                {scannerState === 'matched' && (matchEvidence || 'Book successfully identified in campus stock.')}
+                {scannerState === 'not-stocked' && (matchEvidence || 'Book identified via global archives (not stocked locally).')}
                 {scannerState === 'multiple-matches' && 'Multiple possible matches found. Select one.'}
+                {scannerState === 'text-unclear' && 'Book cover detected, but printed text is blurry.'}
+                {scannerState === 'no-book-detected' && 'No book cover or barcode detected in image.'}
+                {scannerState === 'vision-unconfigured' && 'Gemini Vision API is not configured on server.'}
+                {scannerState === 'camera-denied' && 'Camera permission was denied in browser.'}
+                {scannerState === 'camera-unavailable' && 'Camera hardware not available on device.'}
+                {scannerState === 'invalid-image' && (generalError || 'Invalid image uploaded.')}
                 {scannerState === 'no-match' && 'No catalog titles met similarity threshold.'}
                 {scannerState === 'error' && (generalError || 'Scanner halted due to error.')}
               </span>
             </div>
 
-            {calculatedConfidence !== null && scannerState === 'matched' && (
+            {calculatedConfidence !== null && (scannerState === 'matched' || scannerState === 'not-stocked') && (
               <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold shrink-0">
                 {Math.round(calculatedConfidence * 100)}% Calculated Match
               </span>
@@ -752,7 +902,7 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
           </div>
 
           {/* General Error Banner */}
-          {generalError && (
+          {generalError && scannerState !== 'matched' && scannerState !== 'not-stocked' && (
             <div className="mt-3 p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
               <i className="fa-solid fa-circle-exclamation text-rose-600 shrink-0"></i>
               <span>{generalError}</span>
@@ -816,7 +966,7 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
         {/* Right Column: Dynamic Results Frame */}
         <div className="lg:col-span-5 space-y-4">
           
-          {/* ================= RESULT: SINGLE CONFIDENT MATCH ================= */}
+          {/* ================= STATE 1: BOOK FOUND (IN LOCAL STOCK) ================= */}
           {scannerState === 'matched' && matchedBook && (
             <div className="bg-white rounded-3xl border border-slate-200/90 p-6 shadow-xl space-y-5 animate-in fade-in zoom-in-95 duration-200">
               
@@ -853,7 +1003,7 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
               {/* Book Details */}
               <div className="flex gap-4">
                 <img
-                  src={matchedBook.coverImage}
+                  src={matchedBook.coverImage || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=600&auto=format&fit=crop&q=80'}
                   alt={matchedBook.title}
                   className="w-24 h-36 object-cover rounded-xl shadow-md book-spine shrink-0"
                 />
@@ -934,10 +1084,105 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
                 </div>
               </div>
 
+              {renderDetectedMetadata()}
+
             </div>
           )}
 
-          {/* ================= RESULT: MULTIPLE POSSIBLE MATCHES ================= */}
+          {/* ================= STATE 2: BOOK IDENTIFIED — NOT IN LOCAL STOCK ================= */}
+          {scannerState === 'not-stocked' && matchedBook && (
+            <div className="bg-white rounded-3xl border border-blue-200 p-6 shadow-xl space-y-5 animate-in fade-in zoom-in-95 duration-200">
+              
+              {/* Header Badge */}
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-900 border border-blue-300">
+                  <i className="fa-solid fa-globe text-[10px]"></i>
+                  <span>BOOK IDENTIFIED — NOT IN LOCAL STOCK</span>
+                </span>
+                <span className="text-xs font-mono text-slate-400">
+                  ISBN: {matchedBook.isbn || 'N/A'}
+                </span>
+              </div>
+
+              {/* Informational Notice */}
+              <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 text-xs text-blue-900 leading-relaxed">
+                <span className="font-bold">External Library Match:</span> This book was verified via OpenLibrary / external records, but is currently not stocked in the BookNest campus warehouse.
+              </div>
+
+              {/* Book Details (Genuine Metadata without fabricated prices) */}
+              <div className="flex gap-4">
+                {matchedBook.coverImage ? (
+                  <img
+                    src={matchedBook.coverImage}
+                    alt={matchedBook.title}
+                    className="w-24 h-36 object-cover rounded-xl shadow-md book-spine shrink-0"
+                  />
+                ) : (
+                  <div className="w-24 h-36 rounded-xl bg-slate-100 border border-slate-200 flex flex-col items-center justify-center text-slate-400 text-center p-2 shrink-0">
+                    <i className="fa-solid fa-book text-2xl mb-1"></i>
+                    <span className="text-[10px] leading-tight">No Cover Available</span>
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <span className="text-[10px] font-bold text-blue-700 uppercase tracking-widest block">
+                    {matchedBook.category || 'Academic Publication'}
+                  </span>
+                  <h3 className="font-serif font-bold text-lg text-slate-950 leading-snug line-clamp-2 mt-0.5">
+                    {matchedBook.title}
+                  </h3>
+                  <p className="text-xs text-slate-600 mt-1">by {matchedBook.author}</p>
+                  
+                  <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-slate-500">
+                    {matchedBook.pages > 0 && <span>{matchedBook.pages} pages</span>}
+                    {matchedBook.publisher && (
+                      <>
+                        <span className="text-slate-300">·</span>
+                        <span className="truncate">{matchedBook.publisher}</span>
+                      </>
+                    )}
+                    {matchedBook.year > 0 && (
+                      <>
+                        <span className="text-slate-300">·</span>
+                        <span>{matchedBook.year}</span>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="mt-3">
+                    <span className="inline-block px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-semibold">
+                      Campus Warehouse Stock: 0
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-600 line-clamp-3 leading-relaxed">
+                {matchedBook.description}
+              </p>
+
+              {/* Action Buttons */}
+              <div className="pt-4 border-t border-slate-100 flex flex-col gap-2">
+                <button
+                  disabled
+                  className="w-full py-3 rounded-xl bg-slate-200 text-slate-500 font-bold text-xs cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  <i className="fa-solid fa-box-archive"></i>
+                  <span>Not in Local Stock (Special Order Only)</span>
+                </button>
+                <button
+                  onClick={handleResetScanner}
+                  className="w-full py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors"
+                >
+                  Scan Another Book
+                </button>
+              </div>
+
+              {renderDetectedMetadata()}
+
+            </div>
+          )}
+
+          {/* ================= STATE 3: POSSIBLE MATCHES ================= */}
           {scannerState === 'multiple-matches' && candidates.length > 0 && (
             <div className="bg-white rounded-3xl border border-slate-200/90 p-6 shadow-xl space-y-4 animate-in fade-in zoom-in-95 duration-200">
               
@@ -959,7 +1204,7 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <img
-                        src={cand.book.coverImage}
+                        src={cand.book.coverImage || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=600&auto=format&fit=crop&q=80'}
                         alt={cand.book.title}
                         className="w-10 h-14 object-cover rounded shadow-xs shrink-0"
                       />
@@ -972,9 +1217,11 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
                           <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-200 text-slate-700">
                             {Math.round(cand.confidence * 100)}% match
                           </span>
-                          <span className="font-bold text-xs text-slate-900">
-                            ₹{Math.round(cand.book.price * (1 - cand.book.discount / 100))}
-                          </span>
+                          {cand.book.price > 0 && (
+                            <span className="font-bold text-xs text-slate-900">
+                              ₹{Math.round(cand.book.price * (1 - cand.book.discount / 100))}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -985,7 +1232,11 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
                         setMatchType(cand.matchType);
                         setCalculatedConfidence(cand.confidence);
                         setMatchEvidence(cand.evidence);
-                        setScannerState('matched');
+                        if (cand.book.stock === 0 || cand.book.isLocalCatalog === false) {
+                          setScannerState('not-stocked');
+                        } else {
+                          setScannerState('matched');
+                        }
                       }}
                       className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-amber-600 text-white font-bold text-xs shrink-0 transition-colors"
                     >
@@ -1004,6 +1255,217 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
                 </button>
               </div>
 
+              {renderDetectedMetadata()}
+
+            </div>
+          )}
+
+          {/* ================= STATE 4: BOOK COVER DETECTED — TEXT UNCLEAR ================= */}
+          {scannerState === 'text-unclear' && (
+            <div className="bg-white rounded-3xl border border-amber-200 p-8 shadow-xl text-center space-y-4 animate-in fade-in duration-200">
+              <div className="w-16 h-16 rounded-full bg-amber-50 border border-amber-300 flex items-center justify-center mx-auto text-2xl text-amber-600 shadow-sm">
+                <i className="fa-solid fa-triangle-exclamation"></i>
+              </div>
+              <div>
+                <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 text-xs font-bold font-mono">
+                  BOOK COVER DETECTED — TEXT UNCLEAR
+                </span>
+                <h3 className="font-serif font-bold text-lg text-slate-900 mt-2">
+                  Unreadable Cover Text
+                </h3>
+                <p className="text-xs text-slate-600 mt-1 max-w-sm mx-auto leading-relaxed">
+                  A book or textbook was detected, but printed title and barcode text could not be resolved cleanly due to lighting, glare, or motion blur.
+                </p>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-amber-50/70 border border-amber-200 text-left text-xs text-amber-900 space-y-1">
+                <div className="font-bold">Tips for better recognition:</div>
+                <div className="text-[11px] text-amber-800">
+                  • Avoid reflections or harsh shadows on glossy textbook covers.<br />
+                  • Hold the device parallel to the cover for crisp text resolution.
+                </div>
+              </div>
+
+              <div className="pt-2 flex flex-col gap-2">
+                <button
+                  onClick={handleRetake}
+                  className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-sm transition-all"
+                >
+                  Try Again with Better Lighting
+                </button>
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition-colors"
+                >
+                  Upload Clearer Photo
+                </button>
+              </div>
+
+              {renderDetectedMetadata()}
+            </div>
+          )}
+
+          {/* ================= STATE 5: NO BOOK DETECTED ================= */}
+          {scannerState === 'no-book-detected' && (
+            <div className="bg-white rounded-3xl border border-slate-200/90 p-8 shadow-xl text-center space-y-4 animate-in fade-in duration-200">
+              <div className="w-16 h-16 rounded-full bg-slate-100 border border-slate-300 flex items-center justify-center mx-auto text-2xl text-slate-500 shadow-sm">
+                <i className="fa-solid fa-camera-slash"></i>
+              </div>
+              <div>
+                <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-800 text-xs font-bold font-mono">
+                  NO BOOK DETECTED
+                </span>
+                <h3 className="font-serif font-bold text-lg text-slate-900 mt-2">
+                  Object is Not a Book
+                </h3>
+                <p className="text-xs text-slate-600 mt-1 max-w-sm mx-auto leading-relaxed">
+                  The machine vision engine did not detect any book cover, textbook spine, or barcode in this image. Please center the book cover in the frame.
+                </p>
+              </div>
+
+              <div className="pt-2 flex flex-col gap-2">
+                <button
+                  onClick={handleRetake}
+                  className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-sm transition-all"
+                >
+                  Retake Photo
+                </button>
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition-colors"
+                >
+                  Upload Book Photo
+                </button>
+              </div>
+
+              {renderDetectedMetadata()}
+            </div>
+          )}
+
+          {/* ================= STATE 6: VISION SERVICE NOT CONFIGURED ================= */}
+          {scannerState === 'vision-unconfigured' && (
+            <div className="bg-white rounded-3xl border border-rose-200 p-8 shadow-xl text-center space-y-4 animate-in fade-in duration-200">
+              <div className="w-16 h-16 rounded-full bg-rose-50 border border-rose-300 flex items-center justify-center mx-auto text-2xl text-rose-600 shadow-sm">
+                <i className="fa-solid fa-server"></i>
+              </div>
+              <div>
+                <span className="px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-900 text-xs font-bold font-mono">
+                  VISION SERVICE NOT CONFIGURED
+                </span>
+                <h3 className="font-serif font-bold text-lg text-slate-900 mt-2">
+                  Gemini Vision Disabled
+                </h3>
+                <p className="text-xs text-slate-600 mt-1 max-w-sm mx-auto leading-relaxed">
+                  Optical vision OCR requires the <code className="px-1 py-0.5 rounded bg-slate-100 font-mono text-[11px] text-slate-900">GEMINI_API_KEY</code> environment variable on the server.
+                </p>
+              </div>
+
+              <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-left text-xs text-amber-900 space-y-1">
+                <div className="font-bold flex items-center gap-1.5">
+                  <i className="fa-solid fa-lightbulb text-amber-600"></i>
+                  <span>Available Workarounds:</span>
+                </div>
+                <div className="text-[11px] leading-relaxed text-amber-800">
+                  • Enter an ISBN barcode manually using the input bar below.<br />
+                  • Configure your Gemini API key in the server <code className="font-mono">.env</code> file.
+                </div>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  onClick={handleResetScanner}
+                  className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition-colors"
+                >
+                  Return to Manual Search
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ================= STATE 7: CAMERA PERMISSION DENIED ================= */}
+          {scannerState === 'camera-denied' && (
+            <div className="bg-white rounded-3xl border border-rose-200 p-8 shadow-xl text-center space-y-4 animate-in fade-in duration-200">
+              <div className="w-16 h-16 rounded-full bg-rose-50 border border-rose-300 flex items-center justify-center mx-auto text-2xl text-rose-600 shadow-sm">
+                <i className="fa-solid fa-video-slash"></i>
+              </div>
+              <div>
+                <span className="px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-900 text-xs font-bold font-mono">
+                  CAMERA PERMISSION DENIED
+                </span>
+                <h3 className="font-serif font-bold text-lg text-slate-900 mt-2">
+                  Camera Access Blocked
+                </h3>
+                <p className="text-xs text-slate-600 mt-1 max-w-sm mx-auto leading-relaxed">
+                  Your browser blocked camera access. Please update permission settings in your browser address bar or use image upload below.
+                </p>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-sm transition-all"
+                >
+                  Upload Cover Photo Instead
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ================= STATE 8: CAMERA NOT AVAILABLE ================= */}
+          {scannerState === 'camera-unavailable' && (
+            <div className="bg-white rounded-3xl border border-slate-200 p-8 shadow-xl text-center space-y-4 animate-in fade-in duration-200">
+              <div className="w-16 h-16 rounded-full bg-slate-100 border border-slate-300 flex items-center justify-center mx-auto text-2xl text-slate-600 shadow-sm">
+                <i className="fa-solid fa-plug-circle-xmark"></i>
+              </div>
+              <div>
+                <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-800 text-xs font-bold font-mono">
+                  CAMERA NOT AVAILABLE
+                </span>
+                <h3 className="font-serif font-bold text-lg text-slate-900 mt-2">
+                  No Camera Hardware Detected
+                </h3>
+                <p className="text-xs text-slate-600 mt-1 max-w-sm mx-auto leading-relaxed">
+                  No camera device was detected on your hardware, or the camera is currently in use by another program.
+                </p>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-sm transition-all"
+                >
+                  Upload Cover Photo Instead
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ================= STATE 9: INVALID IMAGE ================= */}
+          {scannerState === 'invalid-image' && (
+            <div className="bg-white rounded-3xl border border-rose-200 p-8 shadow-xl text-center space-y-4 animate-in fade-in duration-200">
+              <div className="w-16 h-16 rounded-full bg-rose-50 border border-rose-300 flex items-center justify-center mx-auto text-2xl text-rose-600 shadow-sm">
+                <i className="fa-solid fa-file-circle-xmark"></i>
+              </div>
+              <div>
+                <span className="px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-900 text-xs font-bold font-mono">
+                  INVALID IMAGE
+                </span>
+                <h3 className="font-serif font-bold text-lg text-slate-900 mt-2">
+                  Image Upload Rejected
+                </h3>
+                <p className="text-xs text-slate-600 mt-1 max-w-sm mx-auto leading-relaxed">
+                  {generalError || 'The uploaded file is not a supported format or exceeds the 10MB limit. Please upload a standard JPG, PNG, or WEBP photo.'}
+                </p>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-sm transition-all"
+                >
+                  Select Another Photo
+                </button>
+              </div>
             </div>
           )}
 
@@ -1017,18 +1479,10 @@ export const EditorialScannerView: React.FC<EditorialScannerViewProps> = ({
                 No Exact Match Found
               </h3>
               <p className="text-xs text-slate-600 mt-2 max-w-sm mx-auto leading-relaxed">
-                We couldn't confidently identify this textbook in the BookNest campus warehouse catalog. We never invent or fake a match.
+                {generalError || "We couldn't confidently identify this textbook in the BookNest campus warehouse catalog or external library records. We never invent or fake a match."}
               </p>
 
-              {/* Honest Metadata Feedback */}
-              {detectedMetadata && detectedMetadata.hasOcrData && (
-                <div className="mt-4 p-3 rounded-xl bg-slate-50 border border-slate-200 text-left text-[11px] font-mono text-slate-600 space-y-1">
-                  <div className="font-bold text-slate-800 uppercase text-[10px]">What the scanner saw:</div>
-                  {detectedMetadata.title && <div>Title: <span className="text-slate-900">{detectedMetadata.title}</span></div>}
-                  {detectedMetadata.author && <div>Author: <span className="text-slate-900">{detectedMetadata.author}</span></div>}
-                  {detectedMetadata.isbn && <div>ISBN: <span className="text-slate-900">{detectedMetadata.isbn}</span></div>}
-                </div>
-              )}
+              {renderDetectedMetadata()}
 
               {/* Fallback actions */}
               <div className="mt-6 flex flex-col gap-2">

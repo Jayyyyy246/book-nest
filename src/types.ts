@@ -18,6 +18,7 @@ export interface Book {
   reviewCount?: number;
   reviews_count?: number;
   featured?: boolean;
+  isLocalCatalog?: boolean;
 }
 
 export interface UserSession {

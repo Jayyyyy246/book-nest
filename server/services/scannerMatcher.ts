@@ -2,7 +2,8 @@
  * BookNest Scanner Matching & Normalization Engine
  * 
  * Provides deterministic ISBN validation, checksums, string similarity metrics,
- * and multi-tiered catalog matching with genuine calculated confidence scores.
+ * bi-directional ISBN-10/13 conversions, and multi-tiered catalog matching with
+ * genuine calculated confidence scores.
  */
 
 export interface MatchCandidate {
@@ -106,10 +107,48 @@ export function convertIsbn10To13(isbn10: string): string | null {
 }
 
 /**
+ * Converts valid ISBN-13 (starting with '978') to ISBN-10.
+ */
+export function convertIsbn13To10(isbn13: string): string | null {
+  const clean = normalizeIsbn(isbn13);
+  if (clean.length !== 13 || !isValidIsbn13(clean) || !clean.startsWith('978')) return null;
+
+  const core = clean.slice(3, 12);
+  let sum = 0;
+  for (let i = 0; i < 9; i++) {
+    sum += parseInt(core[i], 10) * (10 - i);
+  }
+  const checkVal = (11 - (sum % 11)) % 11;
+  const checkChar = checkVal === 10 ? 'X' : String(checkVal);
+  return core + checkChar;
+}
+
+/**
+ * Checks if two ISBNs match directly or via ISBN-10 <-> ISBN-13 conversion.
+ */
+export function isbnsMatch(isbnA: string, isbnB: string): boolean {
+  const cleanA = normalizeIsbn(isbnA);
+  const cleanB = normalizeIsbn(isbnB);
+  if (!cleanA || !cleanB) return false;
+  if (cleanA === cleanB) return true;
+
+  if (cleanA.length === 10 && cleanB.length === 13) {
+    return convertIsbn10To13(cleanA) === cleanB || convertIsbn13To10(cleanB) === cleanA;
+  }
+  if (cleanA.length === 13 && cleanB.length === 10) {
+    return convertIsbn13To10(cleanA) === cleanB || convertIsbn10To13(cleanB) === cleanA;
+  }
+  return false;
+}
+
+/**
  * Normalizes text for string matching:
  * Lowercases, strips punctuation, normalizes spacing, and eliminates common stop words.
  */
-const STOP_WORDS = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'in', 'to', 'for', 'with', 'on', 'at', 'by', 'from', 'edition', 'handbook', 'guide']);
+const STOP_WORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'of', 'in', 'to', 'for', 'with', 'on', 'at', 'by',
+  'from', 'edition', 'handbook', 'guide', 'volume', 'vol', 'series', 'book'
+]);
 
 export function tokenizeAndClean(text: string): string[] {
   if (!text) return [];
@@ -118,6 +157,14 @@ export function tokenizeAndClean(text: string): string[] {
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
     .filter(token => token.length > 1 && !STOP_WORDS.has(token));
+}
+
+/**
+ * Extracts the primary title before subtitles or colons/hyphens.
+ */
+export function getMainTitle(text: string): string {
+  if (!text) return '';
+  return text.split(/[:\-\–\—|]/)[0].trim();
 }
 
 /**
@@ -174,37 +221,86 @@ export function calculateBigramDice(str1: string, str2: string): number {
 }
 
 /**
+ * Calculates Levenshtein Distance similarity (0.0 to 1.0)
+ * Tolerates single/double character OCR replacement/insertion typos.
+ */
+export function calculateLevenshteinSimilarity(s1: string, s2: string): number {
+  const str1 = s1.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const str2 = s2.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (str1 === str2) return 1.0;
+  if (!str1.length || !str2.length) return 0.0;
+
+  const m = str1.length;
+  const n = str2.length;
+  const d: number[][] = [];
+  for (let i = 0; i <= m; i++) d[i] = [i];
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = str1[i - 1] === str2[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(
+        d[i - 1][j] + 1,
+        d[i][j - 1] + 1,
+        d[i - 1][j - 1] + cost
+      );
+    }
+  }
+  const distance = d[m][n];
+  const maxLen = Math.max(m, n);
+  return Math.max(0, 1 - distance / maxLen);
+}
+
+/**
  * Combined String Similarity Score:
- * Weighted average of Token Jaccard (60%) and Bigram Dice (40%).
+ * Considers full title, main title (subtitle stripped), prefix matches,
+ * Token Jaccard, Bigram Dice, and Levenshtein distance.
  */
 export function calculateCombinedSimilarity(query: string, target: string): number {
   if (!query || !target) return 0;
-  const cleanQ = query.trim().toLowerCase();
-  const cleanT = target.trim().toLowerCase();
+  const cleanQ = query.trim().toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const cleanT = target.trim().toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
   if (cleanQ === cleanT) return 1.0;
-  if (cleanT.includes(cleanQ) || cleanQ.includes(cleanT)) {
-    const lengthRatio = Math.min(cleanQ.length, cleanT.length) / Math.max(cleanQ.length, cleanT.length);
-    return Math.max(0.85, 0.70 + 0.30 * lengthRatio);
+
+  // Subtitle comparison: test main title before colon / hyphen
+  const mainQ = getMainTitle(query).toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const mainT = getMainTitle(target).toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (mainQ.length >= 4 && mainT.length >= 4) {
+    if (mainQ === mainT) return 0.95;
+    if (cleanT.startsWith(mainQ) || cleanQ.startsWith(mainT)) {
+      return 0.92;
+    }
+  }
+
+  // Prefix matching for long queries/targets
+  if (cleanQ.length >= 6 && cleanT.length >= 6) {
+    if (cleanT.startsWith(cleanQ) || cleanQ.startsWith(cleanT)) {
+      const lengthRatio = Math.min(cleanQ.length, cleanT.length) / Math.max(cleanQ.length, cleanT.length);
+      return Math.max(0.88, 0.75 + 0.20 * lengthRatio);
+    }
   }
 
   const jaccard = calculateJaccardSimilarity(query, target);
   const dice = calculateBigramDice(query, target);
+  const lev = calculateLevenshteinSimilarity(query, target);
 
-  return parseFloat((0.60 * jaccard + 0.40 * dice).toFixed(4));
+  // Weighted average: Jaccard (40%), Dice (30%), Levenshtein (30%)
+  const score = 0.40 * jaccard + 0.30 * dice + 0.30 * lev;
+  return parseFloat(score.toFixed(4));
 }
 
 /**
  * Core Matching Function
  * 
  * Priority:
- * 1. Exact ISBN
- * 2. Exact ISBN normalized / converted
- * 3. Exact title + author
- * 4. Strong title similarity (>= 0.75)
- * 5. Title + author partial similarity (>= 0.50)
+ * 1. Exact ISBN (direct or ISBN-10 <-> ISBN-13 converted)
+ * 2. Exact title + author (or high title + author similarity)
+ * 3. Title-only match when author is missing or author not detected
+ * 4. Raw OCR line search across title and author
+ * 5. Deterministic candidate ranking
  * 
- * Never invents a match.
+ * Never invents a book.
  */
 export function matchBookAgainstCatalog(
   input: {
@@ -220,52 +316,29 @@ export function matchBookAgainstCatalog(
   const normTitle = (input.title || '').trim();
   const normAuthor = (input.author || '').trim();
 
-  // 1. TIER 1: Exact ISBN Check
+  // 1. TIER 1: Exact ISBN Check (Highest Deterministic Priority)
   if (normIsbn) {
-    // Check direct ISBN
     for (const book of catalog) {
-      const bookIsbnClean = normalizeIsbn(book.isbn);
-      if (bookIsbnClean === normIsbn) {
+      if (isbnsMatch(book.isbn, normIsbn)) {
+        const isConverted = normalizeIsbn(book.isbn) !== normIsbn;
+        const evidence = isConverted
+          ? `Deterministic 100% match via ISBN-10 <-> ISBN-13 conversion (${normIsbn} ↔ ${book.isbn}).`
+          : `Deterministic 100% match on catalog ISBN ${book.isbn}.`;
+
         return {
           matched: true,
           bestMatch: book,
           matchType: 'ISBN_EXACT',
           confidence: 1.0,
-          evidence: `Deterministic 100% match on catalog ISBN ${book.isbn}.`,
+          evidence,
           candidates: [{
             book,
             confidence: 1.0,
             matchType: 'ISBN_EXACT',
-            evidence: `Exact ISBN match (${book.isbn})`
+            evidence
           }],
           normalizedQuery: { isbn: normIsbn, title: normTitle, author: normAuthor }
         };
-      }
-    }
-
-    // If 10-digit ISBN provided, convert to 13-digit and check
-    if (normIsbn.length === 10 && isValidIsbn10(normIsbn)) {
-      const converted13 = convertIsbn10To13(normIsbn);
-      if (converted13) {
-        for (const book of catalog) {
-          const bookIsbnClean = normalizeIsbn(book.isbn);
-          if (bookIsbnClean === converted13) {
-            return {
-              matched: true,
-              bestMatch: book,
-              matchType: 'ISBN_EXACT',
-              confidence: 1.0,
-              evidence: `Matched ISBN-10 to catalog ISBN-13 (${book.isbn}).`,
-              candidates: [{
-                book,
-                confidence: 1.0,
-                matchType: 'ISBN_EXACT',
-                evidence: `Converted ISBN-10 (${normIsbn}) to ISBN-13 (${book.isbn})`
-              }],
-              normalizedQuery: { isbn: normIsbn, title: normTitle, author: normAuthor }
-            };
-          }
-        }
       }
     }
   }
@@ -274,23 +347,37 @@ export function matchBookAgainstCatalog(
   const candidates: MatchCandidate[] = [];
 
   for (const book of catalog) {
+    // 2a. Determine best title similarity
     let titleSim = 0;
     if (normTitle) {
       titleSim = calculateCombinedSimilarity(normTitle, book.title);
-    } else if (input.rawTextLines && input.rawTextLines.length > 0) {
-      // If title wasn't cleanly parsed, test against raw OCR lines
+    }
+
+    // Always check raw text lines against catalog title if available
+    if (input.rawTextLines && input.rawTextLines.length > 0) {
       for (const line of input.rawTextLines) {
         const lineSim = calculateCombinedSimilarity(line, book.title);
         if (lineSim > titleSim) {
           titleSim = lineSim;
         }
       }
+      // Also check 2 consecutive lines combined
+      for (let i = 0; i < input.rawTextLines.length - 1; i++) {
+        const pair = `${input.rawTextLines[i]} ${input.rawTextLines[i + 1]}`;
+        const pairSim = calculateCombinedSimilarity(pair, book.title);
+        if (pairSim > titleSim) {
+          titleSim = pairSim;
+        }
+      }
     }
 
+    // 2b. Determine best author similarity
     let authorSim = 0;
     if (normAuthor) {
       authorSim = calculateCombinedSimilarity(normAuthor, book.author);
-    } else if (input.rawTextLines && input.rawTextLines.length > 0) {
+    }
+
+    if (input.rawTextLines && input.rawTextLines.length > 0) {
       for (const line of input.rawTextLines) {
         const lineSim = calculateCombinedSimilarity(line, book.author);
         if (lineSim > authorSim) {
@@ -299,8 +386,10 @@ export function matchBookAgainstCatalog(
       }
     }
 
-    // Exact Title + Author Match
-    if (titleSim >= 0.95 && authorSim >= 0.85) {
+    // 2c. Evaluate candidate score based on matches
+
+    // CASE A: Strong Title + Author Match
+    if (titleSim >= 0.85 && authorSim >= 0.75) {
       const score = parseFloat((0.70 * titleSim + 0.30 * authorSim).toFixed(4));
       candidates.push({
         book,
@@ -311,22 +400,39 @@ export function matchBookAgainstCatalog(
       continue;
     }
 
-    // Strong Title Match
+    // CASE B: Strong Title Match
     if (titleSim >= 0.75) {
-      const score = normAuthor 
-        ? parseFloat((0.75 * titleSim + 0.25 * authorSim).toFixed(4))
-        : parseFloat(titleSim.toFixed(4));
-
-      candidates.push({
-        book,
-        confidence: score,
-        matchType: 'TITLE_SIMILAR',
-        evidence: `High title similarity (${Math.round(titleSim * 100)}%) with catalog entry "${book.title}".`
-      });
+      if (normAuthor && authorSim >= 0.60) {
+        const score = parseFloat((0.70 * titleSim + 0.30 * authorSim).toFixed(4));
+        candidates.push({
+          book,
+          confidence: Math.min(0.95, score),
+          matchType: 'TITLE_AUTHOR_EXACT',
+          evidence: `Strong match for title "${book.title}" and author "${book.author}".`
+        });
+      } else if (!normAuthor) {
+        // Title-only match when author is missing (BUG 5)
+        const score = parseFloat(Math.min(0.92, titleSim * 0.95).toFixed(4));
+        candidates.push({
+          book,
+          confidence: score,
+          matchType: 'TITLE_SIMILAR',
+          evidence: `High title similarity (${Math.round(titleSim * 100)}%) with catalog entry "${book.title}" (Author omitted/not detected).`
+        });
+      } else {
+        // Author was provided but had lower similarity
+        const score = parseFloat((0.80 * titleSim + 0.20 * authorSim).toFixed(4));
+        candidates.push({
+          book,
+          confidence: score,
+          matchType: 'TITLE_SIMILAR',
+          evidence: `Title similarity (${Math.round(titleSim * 100)}%) with catalog entry "${book.title}".`
+        });
+      }
       continue;
     }
 
-    // Partial Title + Author Match
+    // CASE C: Partial Title + Author Match (both >= 0.50)
     if (titleSim >= 0.50 && authorSim >= 0.50) {
       const score = parseFloat((0.60 * titleSim + 0.40 * authorSim).toFixed(4));
       candidates.push({
@@ -337,19 +443,36 @@ export function matchBookAgainstCatalog(
       });
       continue;
     }
+
+    // CASE D: Moderate Title Match (0.55 to 0.74) for candidates list
+    if (titleSim >= 0.55) {
+      const score = parseFloat((titleSim * 0.85).toFixed(4));
+      candidates.push({
+        book,
+        confidence: score,
+        matchType: 'TITLE_SIMILAR',
+        evidence: `Moderate title match (${Math.round(titleSim * 100)}%) with catalog entry "${book.title}".`
+      });
+      continue;
+    }
   }
 
-  // Sort candidates by confidence descending
-  candidates.sort((a, b) => b.confidence - a.confidence);
+  // Sort candidates deterministically: confidence descending, then title ascending
+  candidates.sort((a, b) => {
+    if (Math.abs(b.confidence - a.confidence) > 0.0001) {
+      return b.confidence - a.confidence;
+    }
+    return a.book.title.localeCompare(b.book.title);
+  });
 
-  // Determine outcome
+  // No candidates met similarity thresholds
   if (candidates.length === 0) {
     return {
       matched: false,
       bestMatch: null,
       matchType: 'NO_MATCH',
       confidence: 0,
-      evidence: normIsbn 
+      evidence: normIsbn
         ? `ISBN ${normIsbn} is valid but not currently indexed in campus warehouse.`
         : 'No catalog titles met the minimum 50% textual similarity threshold.',
       candidates: [],
@@ -359,9 +482,9 @@ export function matchBookAgainstCatalog(
 
   const topMatch = candidates[0];
 
-  // Strong confident match (>= 0.80) with clear lead over second candidate
-  const isConfidentSingleMatch = topMatch.confidence >= 0.80 && 
-    (candidates.length === 1 || (topMatch.confidence - candidates[1].confidence) >= 0.10);
+  // Strong confident match (>= 0.80) with clear lead over second candidate (>= 0.08)
+  const isConfidentSingleMatch = topMatch.confidence >= 0.80 &&
+    (candidates.length === 1 || (topMatch.confidence - candidates[1].confidence) >= 0.08);
 
   return {
     matched: isConfidentSingleMatch,
@@ -369,7 +492,7 @@ export function matchBookAgainstCatalog(
     matchType: topMatch.matchType,
     confidence: topMatch.confidence,
     evidence: topMatch.evidence,
-    candidates: candidates.slice(0, 5), // Top 3 to 5 possible matches
+    candidates: candidates.slice(0, 5),
     normalizedQuery: { isbn: normIsbn, title: normTitle, author: normAuthor }
   };
 }

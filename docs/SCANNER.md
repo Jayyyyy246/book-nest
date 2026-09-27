@@ -4,13 +4,19 @@
 
 The BookNest Scanner is a deterministic optical book and barcode identification system. Unlike previous mock prototypes, **the scanner never simulates recognition**. 
 
-- **Zero Fake Recognition**: It never selects a random book, never generates hardcoded confidence scores (e.g. "99.4%"), and never fabricates OCR text sequences.
+- **Zero Fake Recognition**: It never selects a random book, never generates hardcoded confidence scores (e.g. "99.4%"), and never fabricates OCR text sequences or prices.
 - **Strict Mode Separation**:
   1. `REAL CAMERA`: Interacts with hardware camera devices via `navigator.mediaDevices.getUserMedia`.
   2. `REAL IMAGE UPLOAD`: Processes user-uploaded image files (`.jpg`, `.jpeg`, `.png`, `.webp`).
   3. `DEMO SAMPLE`: Explicitly labelled preset catalog demonstrations. Samples are clearly marked with `DEMO` badges and note that hardware vision is bypassed.
-- **Deterministic Prioritization**: Barcode and ISBN checksum verification are the primary identification mechanisms. If a barcode is unreadable, machine vision optical character recognition (OCR) extracts text for fuzzy string similarity matching against the catalog.
-- **Honest Rejections**: If no catalog title meets similarity thresholds, the system presents `"No exact match found"` and transparently displays what text the camera detected. It never invents a match.
+- **Deterministic Fallback Pipeline**:
+  1. Browser `BarcodeDetector` when available.
+  2. Captured/uploaded image sent to backend vision OCR.
+  3. Backend vision/OCR extracts ISBN if visible.
+  4. If ISBN is unavailable, extracts title + author from cover.
+  5. Matches title/author against local warehouse catalog.
+  6. If local catalog has no match, queries OpenLibrary metadata archive.
+  7. Returns an honest "BOOK IDENTIFIED — NOT IN LOCAL STOCK" result instead of pretending no book exists.
 
 ---
 
@@ -23,10 +29,11 @@ The BookNest Scanner is a deterministic optical book and barcode identification 
          ▼                                   ▼
     REAL CAMERA                         IMAGE UPLOAD
   (MediaDevices API)                 (JPG/PNG/WEBP < 10MB)
+  Ideal Environment                   Strict Type & Size
          │                                   │
          ▼                                   ▼
    Live Preview &                      Image Preview &
-   Frame Capture                       "Use This Image"
+   Frame Capture (videoReady >= 2)     "Use This Image"
          │                                   │
          └─────────────────┬─────────────────┘
                            │
@@ -39,129 +46,125 @@ The BookNest Scanner is a deterministic optical book and barcode identification 
              Checksum: ISBN-10 / ISBN-13
                            │
             ┌──────────────┴──────────────┐
-            ▼ [ISBN Detected]             ▼ [No Barcode]
-   BOOK METADATA LOOKUP            OCR TITLE/AUTHOR EXTRACTION
- (1. Warehouse DB                  (Google Gemini Vision OCR via
-  2. OpenLibrary Fallback)          Server Proxy)
+            ▼ [Barcode Detected]          ▼ [No Barcode]
+   LOCAL / OPENLIBRARY LOOKUP      GEMINI MACHINE VISION OCR
+   (1. Warehouse Catalog           (Prompt: title, author, publisher,
+    2. OpenLibrary Fallback)        isbn, rawTextLines, isBook)
             │                             │
             │                             ▼
             │                   LOCAL CATALOG MATCHING
-            │                   (Token Jaccard & Bigram Dice)
+            │                   (Jaccard, Dice, Levenshtein, Subtitles)
             │                             │
-            └──────────────┬──────────────┘
+            │              ┌──────────────┴──────────────┐
+            │              ▼ [Local Match]               ▼ [No Local Match]
+            │       LOCAL CATALOG MATCH           OPENLIBRARY SEARCH
+            │     Confidence >= 0.80              (Query: title + author)
+            │              │                             │
+            └──────────────┼─────────────────────────────┘
                            │
                            ▼
                     RESULT EVALUATION
                            │
-      ┌────────────────────┼────────────────────┐
-      ▼                    ▼                    ▼
-[Single Match]    [Multiple Candidates]    [No Match]
-  Confidence >= 0.80   Confidence 0.50-0.79    Confidence < 0.50
-  "BOOK FOUND"         "POSSIBLE MATCHES"      "NO MATCH FOUND"
-  Genuine Evidence     User Selection          Honest Feedback
+       ┌───────────────────┼───────────────────┐
+       ▼                   ▼                   ▼
+ [BOOK FOUND]    [NOT IN LOCAL STOCK]    [POSSIBLE MATCHES]
+  Local warehouse  OpenLibrary verified    Multiple candidates
+  Stock > 0        Stock = 0, Honest info  User selection
+       │                   │                   │
+       ▼                   ▼                   ▼
+ [TEXT UNCLEAR]  [NO BOOK DETECTED]   [VISION UNCONFIGURED]
+  Blurry cover    Non-book image       Missing GEMINI_API_KEY
 ```
 
 ---
 
 ## 3. Identification & Matching Engine (`server/services/scannerMatcher.ts`)
 
-### ISBN Normalization & Checksum Algorithms
+### Bi-directional ISBN-10 ↔ ISBN-13 Conversion & Checksum Algorithms
 - **ISBN-13 / EAN-13**: Strips spaces and hyphens. Validates checksum using Modulo 10 with alternating weights of 1 and 3:
   $$\left(10 - \left(\sum_{i=1}^{12} d_i \times (1 \text{ or } 3)\right) \pmod{10}\right) \pmod{10} = d_{13}$$
-- **ISBN-10**: Validates checksum using Modulo 11 with weights 10 down to 1 (with `'X'` representing 10). Automatically converted to ISBN-13 (`978...`) with recalculation of check digit.
+- **ISBN-10**: Validates checksum using Modulo 11 with weights 10 down to 1 (with `'X'` representing 10). Automatically converted to ISBN-13 (`978...`) with check digit recalculation.
+- **Bi-directional Conversion**: Handles catalog books in ISBN-13 matching input ISBN-10, and catalog books in ISBN-10 matching input ISBN-13 via `isbnsMatch()`.
 
-### Catalog Matching Hierarchy
-The matching engine evaluates inputs against local catalog inventory in strict order of deterministic confidence:
+### Multi-tiered Deterministic Catalog Matching Hierarchy
 
 | Priority | Match Type | Condition | Calculated Confidence | Evidence Output |
 |---|---|---|---|---|
-| **1** | `ISBN_EXACT` | Catalog book ISBN matches normalized scanned ISBN exactly | `1.0` (100%) | `"Deterministic 100% match on catalog ISBN"` |
-| **2** | `ISBN_CONVERTED` | Catalog book ISBN matches converted ISBN-10/13 | `1.0` (100%) | `"Deterministic 100% match on converted ISBN-10/13"` |
-| **3** | `TITLE_AUTHOR_EXACT` | Extracted title and author match catalog entry exactly | `0.95` (95%) | `"Exact match on title and author"` |
-| **4** | `TITLE_SIMILAR` | Token Jaccard + Bigram Dice similarity $\ge 0.75$ | `0.75 – 0.92` | `"Strong title similarity: [Title]"` |
-| **5** | `PARTIAL_CANDIDATE` | Similarity between $0.50$ and $0.74$ | `0.50 – 0.74` | Added to candidates list for user verification |
-| **6** | `NO_MATCH` | No titles exceed 0.50 similarity | `0.0` (0%) | `"We couldn't confidently identify this textbook"` |
+| **1** | `ISBN_EXACT` | Scanned ISBN matches catalog ISBN directly or converted | `1.0` (100%) | `"Deterministic 100% match on catalog ISBN"` |
+| **2** | `TITLE_AUTHOR_EXACT` | Extracted title and author match catalog entry | `0.95 – 0.98` | `"Exact match for title [Title] and author [Author]"` |
+| **3** | `TITLE_SIMILAR` | Title similarity $\ge 0.75$ (author omitted or partial) | `0.75 – 0.92` | `"High title similarity with catalog entry"` |
+| **4** | `TITLE_AUTHOR_PARTIAL` | Both title & author similarity $\ge 0.50$ | `0.50 – 0.74` | Added to candidates list for user verification |
+| **5** | `EXTERNAL_TITLE_MATCH` | No local match, but identified via OpenLibrary archive | `0.85` | `"Identified via OpenLibrary external archive"` |
+| **6** | `NO_MATCH` | No titles exceed 0.50 similarity threshold | `0.0` (0%) | Transparently displays detected OCR text readout |
 
 ---
 
 ## 4. Hardware Camera Lifecycle & MediaDevices
 
-The camera implementation adheres to modern browser security and performance guidelines:
-
-1. **Explicit User Interaction**: `navigator.mediaDevices.getUserMedia` is called **only** when the user clicks `"Start Camera"`. No permission prompts are launched automatically.
-2. **Mobile Environment Camera**: Configured with `{ facingMode: { ideal: 'environment' } }` to default to the rear camera on mobile devices.
-3. **Capture Frame Review**: Users capture a video frame to a high-resolution off-screen `<canvas>`. The review HUD displays `"Use This Image"` and `"Retake"` buttons before running network recognition.
-4. **Track Cleanup**: All `MediaStream` video tracks are explicitly stopped (`track.stop()`) on:
-   - View unmount / navigation away from the scanner
-   - Explicit `"Stop"` button click
-   - Retake action
-   - Camera initialization error
-5. **Robust Error Handling**:
-   - `NotAllowedError`: Displays `"Camera permission was denied. Please allow camera access in your browser settings, or use image upload below."`
-   - `NotFoundError`: Displays `"No camera hardware found on this device. Please upload a book cover photo instead."`
-   - Unhandled exceptions display an alert with an instant fallback `"Upload Cover Photo Instead"` button.
+1. **Explicit User Interaction**: `navigator.mediaDevices.getUserMedia` is called **only** when the user clicks `"Start Camera"`.
+2. **Mobile Environment Camera**: Configured with `{ facingMode: { ideal: 'environment' } }`. Gracefully falls back to standard video constraint `{ video: true }` if device constraints fail.
+3. **High-Resolution Frame Capture**: Captures video frame to `<canvas>` using actual `videoWidth` and `videoHeight` (preserving aspect ratio without upscaling), only after `video.readyState >= 2`, at JPEG quality `0.95`.
+4. **Stale State Bug Fix**: Uses `useRef<ScannerState>('idle')` synchronized with React state to ensure real-time interval callbacks check active state without stale closures.
+5. **Track Cleanup**: Clears intervals and stops all `MediaStream` tracks on view unmount, camera stop, retake, or error.
 
 ---
 
-## 5. Security & Machine Vision Privacy
+## 5. Security & Vision Service Configuration
 
-- **No Exposed API Keys**: Google Gemini Vision API calls are strictly handled by the backend Express server (`server/routes/scanner.ts`). No Google GenAI API keys are exposed to the client bundle.
-- **Upload Validation**:
-  - Allowed MIME types: `image/jpeg`, `image/png`, `image/webp`. Other types (e.g. GIF, SVG) are rejected with HTTP 400.
-  - Maximum upload size: 10MB payload ceiling. Empty uploads or corrupt payloads are rejected.
-- **Vision OCR Prompting**: The server-side Gemini prompt instructs the model to return **only** visible text lines without guessing or hallucinating missing fields.
+- **Environment Verification**: Backend verifies `GEMINI_API_KEY` before processing. If unconfigured, returns `503 Service Unavailable` with `matchType: "VISION_CONFIGURATION_ERROR"` and an honest error message. Never exposes API keys.
+- **No Fabricated Metadata**: When books are retrieved from external sources (OpenLibrary), fields not provided (price, rating, publisher, pages) are set to `0` or empty strings. Stock is explicitly marked `0` with `isLocalCatalog: false`.
+- **Upload Validation**: Restricts MIME types to `image/jpeg`, `image/png`, `image/webp`. Enforces strict 10MB payload ceiling.
 
 ---
 
-## 6. Scanner State Machine
+## 6. The 9 Distinct Result States
 
-The interface implements an explicit 12-state deterministic state machine:
+The scanner UI cleanly differentiates between 9 dedicated result states:
 
-| State | Description | User Interface |
-|---|---|---|
-| `idle` | Waiting for user interaction | Viewfinder placeholder, Start Camera, Upload Photo, Manual ISBN input |
-| `camera-starting` | Requesting browser media stream | Loading spinner, camera request HUD |
-| `camera-ready` | Live video feed active | Real-time video preview, laser targeting reticle, Capture button |
-| `captured` | Freeze frame captured | Captured frame preview, "Use This Image", "Retake" buttons |
-| `processing` | Client barcode analysis | Scanning animation HUD |
-| `isbn-detected` | Barcode extracted | Displaying ISBN vector badge |
-| `ocr-processing` | Running machine vision OCR | Vision OCR processing badge |
-| `searching` | Querying warehouse catalog | Candidate database lookup badge |
-| `matched` | Confident single book identified | **BOOK FOUND** card with cover, pricing, stock, Add to Bag, Details |
-| `multiple-matches` | Ambiguous title matches (3–5 books) | **POSSIBLE MATCHES** list with confidence chips & Select buttons |
-| `no-match` | No confident catalog match | **NO MATCH FOUND** card, camera readout feedback, Try Again button |
-| `error` | Camera denied or upload failure | Error banner with direct "Upload Cover Photo Instead" action |
+1. `BOOK FOUND`: Book identified in local catalog with active stock. Active "Add to Bag" button.
+2. `BOOK IDENTIFIED — NOT IN LOCAL STOCK`: Book identified via OpenLibrary or catalog with 0 stock. Displays honest external notice, disables Add to Bag.
+3. `POSSIBLE MATCHES`: Ambiguous title/author matches (3–5 books) with confidence badges and "Select" buttons.
+4. `BOOK COVER DETECTED — TEXT UNCLEAR`: Vision engine detected a book, but printed text was blurry or obscured.
+5. `NO BOOK DETECTED`: Image does not depict a book cover, spine, or barcode.
+6. `VISION SERVICE NOT CONFIGURED`: Server lacks `GEMINI_API_KEY`. Provides manual search guidance.
+7. `CAMERA PERMISSION DENIED`: User or browser blocked camera access. Provides instant photo upload fallback.
+8. `CAMERA NOT AVAILABLE`: Device hardware has no camera or device is in use by another program.
+9. `INVALID IMAGE`: Uploaded file has unsupported format or exceeds 10MB.
+
+### Optical Vision Readout (Debug HUD)
+Whenever text is detected from an image, the UI presents an optical diagnostic readout displaying:
+- Detected title
+- Detected author
+- Detected ISBN
+- Detected publisher
+- Extraction notes
 
 ---
 
 ## 7. Automated Test Suite (`scripts/test-scanner.mjs`)
 
-A 43-assertion verification suite tests real end-to-end scanner behavior:
+The test suite validates 16 real end-to-end scenarios covering all requirements:
 
 | # | Test Scenario | Verification Criteria | Status |
 |---|---|---|---|
-| **1** | Known ISBN (`9780132350884`) | Returns 200 OK, `ISBN_EXACT`, confidence 1.0, Clean Code | ✅ PASS |
-| **2** | Unknown ISBN (`9780000000002`) | Returns 404 Not Found, `matched: false`, no fake book | ✅ PASS |
-| **3** | Known Title (`"Atomic Habits"`) | Returns 200 OK, confidence $\ge 0.85$, identifies book | ✅ PASS |
-| **4** | Unknown Title (`"Quantum Banana..."`) | Returns 200 OK, `matched: false`, confidence 0, no book | ✅ PASS |
-| **5** | Multiple Candidates (`"Design"`) | Returns candidates list with calculated confidence | ✅ PASS |
-| **6** | Empty Upload Validation | Rejects empty base64 with status 400 | ✅ PASS |
-| **7** | Invalid Image Format | Rejects unsupported MIME types with status 400 | ✅ PASS |
-| **8** | Blurry / Blank Image | Returns 404 with honest explanation that text is unreadable | ✅ PASS |
-| **9** | Browser Camera Flow (Desktop) | Renders Start Camera, laser reticle, manual lookup, result card | ✅ PASS |
-| **10** | Try Scanner Demo Mode | Displays explicit `DEMO SAMPLE` badge and vision bypass note | ✅ PASS |
-| **11** | Mobile Viewport (iPhone SE) | Validates touch-friendly layout at 375x667 resolution | ✅ PASS |
-| **12** | Camera Permission Denied | Simulates `NotAllowedError`, verifies alert & upload fallback | ✅ PASS |
+| **1** | Known ISBN (`9780132350884`) | Returns 200 OK, `ISBN_EXACT`, confidence 1.0, Clean Code, local stock | ✅ PASS |
+| **2** | Unknown ISBN (`9780000000002`) | Returns 404 Not Found, `matched: false`, honest error | ✅ PASS |
+| **3** | ISBN-10 (`0132350882`) | Returns 200 OK, converts to ISBN-13, matches Clean Code | ✅ PASS |
+| **4** | ISBN-13 (`9780735211292`) | Returns 200 OK, matches Atomic Habits | ✅ PASS |
+| **5** | Title-Only Match (`Atomic Habits`) | Returns 200 OK, confidence $\ge 0.85$, identifies book without author | ✅ PASS |
+| **6** | Title + Author Match (`Clean Code`) | Returns 200 OK, `TITLE_AUTHOR_EXACT`, confidence $\ge 0.95$ | ✅ PASS |
+| **7** | Unknown Title | Returns 200 OK, `matched: false`, confidence 0, no book invented | ✅ PASS |
+| **8** | OCR Title without ISBN | Matches Pragmatic Programmer from title without ISBN | ✅ PASS |
+| **9** | OCR Title + Partial Author | Tolerates OCR noise and partial author names | ✅ PASS |
+| **10** | OpenLibrary External ISBN | Matches Crime & Punishment (`9780140449136`), `isLocalCatalog: false`, stock 0 | ✅ PASS |
+| **11** | Unsupported Image Format | Rejects GIF with status 400 | ✅ PASS |
+| **12** | Gemini Unavailable | Returns status 503, `VISION_CONFIGURATION_ERROR` | ✅ PASS |
+| **13** | Blank Image | Returns 404 (or 503), `matched: false` | ✅ PASS |
+| **14** | BarcodeDetector Unavailable | Simulates browser without BarcodeDetector, validates graceful fallback | ✅ PASS |
+| **15** | Try Scanner Demo Mode | Displays explicit `DEMO SAMPLE` badge | ✅ PASS |
+| **16** | Camera Permission Denied | Simulates `NotAllowedError`, verifies `CAMERA PERMISSION DENIED` state | ✅ PASS |
 
-To run the verification suite at any time:
+To run the verification suite:
 ```bash
 node scripts/test-scanner.mjs
 ```
-
----
-
-## 8. Current Limitations & Considerations
-
-1. **Cover Occlusion**: If more than 60% of a book's title and author text is obscured, optical OCR will be unable to match against the catalog and will honestly return `"No exact match found"`.
-2. **Barcode Reflections**: Glossy textbook covers under harsh fluorescent lighting may produce glare on the barcode. In such cases, taking a photo using the `"Upload Photo"` button with flash disabled produces the cleanest recognition.
-3. **Local Warehouse Catalog**: The primary warehouse DB contains campus textbook inventory. When an ISBN is scanned that is not in the local catalog, the scanner queries OpenLibrary to identify the book title, but marks stock as `"Special Order"`.
