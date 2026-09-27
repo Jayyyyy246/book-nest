@@ -14,4 +14,8 @@ export const config = {
   openLibraryBaseUrl: 'https://openlibrary.org/api/books',
   defaultPageLimit: 50,
   geminiApiKey: process.env.GEMINI_API_KEY || '',
+  googleClientId: process.env.GOOGLE_CLIENT_ID || '',
+  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
+  appUrl: process.env.APP_URL || 'http://localhost:3000',
 };
+

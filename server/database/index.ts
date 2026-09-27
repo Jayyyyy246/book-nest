@@ -191,7 +191,51 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_search_history_user ON search_history(user_id);
   `);
 
+  // Non-destructive migrations for Google OAuth columns on users
+  try {
+    db.exec('ALTER TABLE users ADD COLUMN google_id TEXT;');
+  } catch {}
+  try {
+    db.exec('ALTER TABLE users ADD COLUMN avatar_url TEXT;');
+  } catch {}
+
+  // Ensure all 19 predefined categories exist
+  ensurePredefinedCategories();
+
   seedData();
+}
+
+export const PREDEFINED_CATEGORIES = [
+  { name: 'Fiction', slug: 'fiction', icon: 'fa-solid fa-feather-pointed', color: 'text-rose-600', accent_bg: 'bg-rose-50', description: 'Novels, literary masterworks & storytelling' },
+  { name: 'Non-Fiction', slug: 'non-fiction', icon: 'fa-solid fa-book-open', color: 'text-amber-600', accent_bg: 'bg-amber-50', description: 'Factual works, journalism & memoirs' },
+  { name: 'Science', slug: 'science', icon: 'fa-solid fa-flask', color: 'text-cyan-600', accent_bg: 'bg-cyan-50', description: 'Physics, biology, astronomy & empirical inquiry' },
+  { name: 'Technology', slug: 'technology', icon: 'fa-solid fa-microchip', color: 'text-blue-600', accent_bg: 'bg-blue-50', description: 'Innovations, hardware, systems & modern computing' },
+  { name: 'Programming', slug: 'programming', icon: 'fa-solid fa-laptop-code', color: 'text-indigo-600', accent_bg: 'bg-indigo-50', description: 'Software engineering, algorithms & web development' },
+  { name: 'Cybersecurity', slug: 'cybersecurity', icon: 'fa-solid fa-shield-halved', color: 'text-red-600', accent_bg: 'bg-red-50', description: 'Network security, cryptography & ethical hacking' },
+  { name: 'Business', slug: 'business', icon: 'fa-solid fa-briefcase', color: 'text-emerald-600', accent_bg: 'bg-emerald-50', description: 'Enterprise management, strategy & entrepreneurship' },
+  { name: 'Finance', slug: 'finance', icon: 'fa-solid fa-chart-line', color: 'text-teal-600', accent_bg: 'bg-teal-50', description: 'Markets, corporate accounting & personal investments' },
+  { name: 'History', slug: 'history', icon: 'fa-solid fa-landmark', color: 'text-amber-700', accent_bg: 'bg-amber-100', description: 'World chronicles, civilizations & eras' },
+  { name: 'Biography', slug: 'biography', icon: 'fa-solid fa-user-pen', color: 'text-stone-600', accent_bg: 'bg-stone-100', description: 'Memoirs and lives of extraordinary thinkers' },
+  { name: 'Self-Help', slug: 'self-help', icon: 'fa-solid fa-brain', color: 'text-violet-600', accent_bg: 'bg-violet-50', description: 'Mindset, productivity & habit formation' },
+  { name: 'Psychology', slug: 'psychology', icon: 'fa-solid fa-heart-pulse', color: 'text-pink-600', accent_bg: 'bg-pink-50', description: 'Human cognition, behavior & mental health' },
+  { name: 'Philosophy', slug: 'philosophy', icon: 'fa-solid fa-monument', color: 'text-yellow-700', accent_bg: 'bg-yellow-50', description: 'Ethics, epistemology, logic & existential thought' },
+  { name: 'Romance', slug: 'romance', icon: 'fa-solid fa-heart', color: 'text-rose-500', accent_bg: 'bg-rose-50', description: 'Passionate tales and romantic fiction' },
+  { name: 'Mystery', slug: 'mystery', icon: 'fa-solid fa-magnifying-glass', color: 'text-slate-700', accent_bg: 'bg-slate-100', description: 'Detective stories, puzzles & suspense' },
+  { name: 'Thriller', slug: 'thriller', icon: 'fa-solid fa-bolt', color: 'text-orange-600', accent_bg: 'bg-orange-50', description: 'High-stakes suspense & psychological intrigue' },
+  { name: 'Fantasy', slug: 'fantasy', icon: 'fa-solid fa-wand-magic-sparkles', color: 'text-purple-600', accent_bg: 'bg-purple-50', description: 'Mythical worlds, magic & epic journeys' },
+  { name: 'Education', slug: 'education', icon: 'fa-solid fa-graduation-cap', color: 'text-sky-600', accent_bg: 'bg-sky-50', description: 'Academic textbooks, curricula & pedagogy' },
+  { name: 'Other', slug: 'other', icon: 'fa-solid fa-shapes', color: 'text-slate-500', accent_bg: 'bg-slate-50', description: 'General collection and eclectic volumes' }
+];
+
+function ensurePredefinedCategories() {
+  const insertCat = db.prepare(`
+    INSERT OR IGNORE INTO categories (name, slug, icon, color, accent_bg, description)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const cat of PREDEFINED_CATEGORIES) {
+    insertCat.run(cat.name, cat.slug, cat.icon, cat.color, cat.accent_bg, cat.description);
+  }
 }
 
 function seedData() {

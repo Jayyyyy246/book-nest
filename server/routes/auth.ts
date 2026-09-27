@@ -10,4 +10,10 @@ router.post('/logout', authController.logout);
 router.get('/me', requireAuth, authController.getMe);
 router.get('/demo-users', authController.getDemoUsers);
 
+// Google OAuth
+router.get('/google', authController.googleAuth);
+router.get('/google/callback', authController.googleCallback);
+router.post('/google', authController.googleLogin);
+
 export default router;
+

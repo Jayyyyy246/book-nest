@@ -16,6 +16,29 @@ import { OrdersView } from './components/OrdersView';
 import { WishlistView } from './components/WishlistView';
 import { AuthModal } from './components/AuthModal';
 
+export const CATALOG_CATEGORIES = [
+  { slug: 'all', label: 'All Shelves' },
+  { slug: 'fiction', label: 'Fiction' },
+  { slug: 'non-fiction', label: 'Non-Fiction' },
+  { slug: 'science', label: 'Science' },
+  { slug: 'technology', label: 'Technology' },
+  { slug: 'programming', label: 'Programming' },
+  { slug: 'cybersecurity', label: 'Cybersecurity' },
+  { slug: 'business', label: 'Business' },
+  { slug: 'finance', label: 'Finance' },
+  { slug: 'history', label: 'History' },
+  { slug: 'biography', label: 'Biography' },
+  { slug: 'self-help', label: 'Self-Help' },
+  { slug: 'psychology', label: 'Psychology' },
+  { slug: 'philosophy', label: 'Philosophy' },
+  { slug: 'romance', label: 'Romance' },
+  { slug: 'mystery', label: 'Mystery' },
+  { slug: 'thriller', label: 'Thriller' },
+  { slug: 'fantasy', label: 'Fantasy' },
+  { slug: 'education', label: 'Education' },
+  { slug: 'other', label: 'Other' },
+];
+
 export default function App() {
   // Navigation & View state (persisted across page reloads via hash and localStorage)
   const [activeView, setActiveView] = useState<'store' | 'catalog' | 'scanner' | 'admin' | 'orders' | 'wishlist'>(() => {
@@ -116,18 +139,46 @@ export default function App() {
         console.warn('Backend catalog query warning:', err);
       });
 
-    // 2. Authenticate or restore active session
-    const token = getStoredToken();
-    if (token) {
+    // 2. Handle Google OAuth redirect callback or restore active session
+    const urlParams = new URLSearchParams(window.location.search);
+    const oauthToken = urlParams.get('token');
+    const authError = urlParams.get('auth_error');
+
+    if (oauthToken) {
+      setStoredToken(oauthToken);
       api.getMe()
         .then(res => {
           setCurrentUser(res.user);
           loadUserData();
+          showToast(`Welcome back, ${res.user.name}! Signed in with Google.`, 'success');
         })
         .catch(() => {
           setStoredToken(null);
           setCurrentUser(null);
+          showToast('Failed to verify Google session.', 'error');
+        })
+        .finally(() => {
+          window.history.replaceState({}, document.title, window.location.pathname);
         });
+    } else if (authError) {
+      const errorMsg = authError === 'google_oauth_unconfigured'
+        ? 'Google OAuth credentials are not configured in backend .env. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.'
+        : `Google sign-in error: ${authError.replace(/_/g, ' ')}`;
+      showToast(errorMsg, 'error');
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else {
+      const token = getStoredToken();
+      if (token) {
+        api.getMe()
+          .then(res => {
+            setCurrentUser(res.user);
+            loadUserData();
+          })
+          .catch(() => {
+            setStoredToken(null);
+            setCurrentUser(null);
+          });
+      }
     }
   }, []);
 
@@ -394,7 +445,13 @@ export default function App() {
   const filteredCatalogBooks = useMemo(() => {
     return books
       .filter(b => {
-        if (selectedCategory !== 'all' && b.categorySlug !== selectedCategory) return false;
+        if (selectedCategory !== 'all') {
+          const sel = selectedCategory.toLowerCase();
+          const slug = (b.categorySlug || 'other').toLowerCase();
+          const cat = (b.category || 'Other').toLowerCase();
+          const matches = slug === sel || cat === sel || cat.includes(sel) || sel.includes(slug);
+          if (!matches) return false;
+        }
         if (catalogSearch.trim()) {
           const q = catalogSearch.toLowerCase();
           const matchTitle = b.title.toLowerCase().includes(q);
@@ -709,15 +766,8 @@ export default function App() {
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
                   Shelf Discipline
                 </label>
-                <div className="space-y-1">
-                  {[
-                    { slug: 'all', label: 'All Shelves' },
-                    { slug: 'fiction', label: 'Fiction & Literature' },
-                    { slug: 'programming', label: 'Computer Science & Tech' },
-                    { slug: 'science-fiction', label: 'Science Fiction' },
-                    { slug: 'business', label: 'Business & Finance' },
-                    { slug: 'self-help', label: 'Self Help & Mindset' },
-                  ].map((cat) => (
+                <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+                  {CATALOG_CATEGORIES.map((cat) => (
                     <button
                       key={cat.slug}
                       onClick={() => setSelectedCategory(cat.slug)}

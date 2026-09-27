@@ -13,6 +13,28 @@ interface OrderItem {
   payment: string;
 }
 
+export const PREDEFINED_CATEGORIES = [
+  'Fiction',
+  'Non-Fiction',
+  'Science',
+  'Technology',
+  'Programming',
+  'Cybersecurity',
+  'Business',
+  'Finance',
+  'History',
+  'Biography',
+  'Self-Help',
+  'Psychology',
+  'Philosophy',
+  'Romance',
+  'Mystery',
+  'Thriller',
+  'Fantasy',
+  'Education',
+  'Other'
+];
+
 interface AdminDashboardProps {
   books: Book[];
   onUpdateBookStock: (bookId: number, newStock: number) => void;
@@ -482,8 +504,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             <i className="fa-solid fa-pen-to-square text-xs"></i>
                           </button>
                           <button
-                            onClick={() => onDeleteBook(book.id)}
-                            className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600"
+                            onClick={() => {
+                              const confirmed = window.confirm(`Are you sure you want to delete "${book.title}" from the catalog? This cannot be undone.`);
+                              if (confirmed) {
+                                onDeleteBook(book.id);
+                              }
+                            }}
+                            className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 transition-colors"
                             title="Delete Book"
                           >
                             <i className="fa-regular fa-trash-can text-xs"></i>
@@ -658,11 +685,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     onChange={(e) => setFormCategory(e.target.value)}
                     className="w-full py-2 px-3 rounded-xl border border-slate-200 dark:bg-slate-800 focus:ring-2 focus:ring-amber-500 focus:outline-none"
                   >
-                    <option value="Computer Science">Computer Science</option>
-                    <option value="Fiction">Fiction</option>
-                    <option value="Science Fiction">Science Fiction</option>
-                    <option value="Business">Business</option>
-                    <option value="Self Help">Self Help</option>
+                    {PREDEFINED_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
                   </select>
                 </div>
 

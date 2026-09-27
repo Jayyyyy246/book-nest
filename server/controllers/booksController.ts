@@ -12,8 +12,8 @@ export const booksController = {
         b.id,
         b.title,
         a.name as author,
-        c.name as category,
-        c.slug as categorySlug,
+        COALESCE(c.name, 'Other') as category,
+        COALESCE(c.slug, 'other') as categorySlug,
         b.price,
         b.discount,
         b.rating,
@@ -27,16 +27,16 @@ export const booksController = {
         b.description,
         (SELECT COUNT(*) FROM reviews r WHERE r.book_id = b.id) as reviewCount
       FROM books b
-      JOIN authors a ON b.author_id = a.id
-      JOIN categories c ON b.category_id = c.id
+      LEFT JOIN authors a ON b.author_id = a.id
+      LEFT JOIN categories c ON b.category_id = c.id
       WHERE 1=1
     `;
 
     const params: any[] = [];
 
     if (category && category !== 'all') {
-      query += ' AND c.slug = ?';
-      params.push(category);
+      query += ` AND (c.slug = ? OR LOWER(c.name) = LOWER(?) OR (c.slug IS NULL AND LOWER(?) = 'other'))`;
+      params.push(category, category, category);
     }
 
     if (search && typeof search === 'string' && search.trim()) {
@@ -100,8 +100,8 @@ export const booksController = {
         b.id,
         b.title,
         a.name as author,
-        c.name as category,
-        c.slug as categorySlug,
+        COALESCE(c.name, 'Other') as category,
+        COALESCE(c.slug, 'other') as categorySlug,
         b.price,
         b.discount,
         b.rating,
@@ -115,9 +115,9 @@ export const booksController = {
         b.description,
         (SELECT COUNT(*) FROM reviews r WHERE r.book_id = b.id) as reviewCount
       FROM books b
-      JOIN authors a ON b.author_id = a.id
-      JOIN categories c ON b.category_id = c.id
-      WHERE LOWER(b.title) LIKE ? OR LOWER(a.name) LIKE ? OR b.isbn LIKE ? OR LOWER(c.name) LIKE ?
+      LEFT JOIN authors a ON b.author_id = a.id
+      LEFT JOIN categories c ON b.category_id = c.id
+      WHERE LOWER(b.title) LIKE ? OR LOWER(a.name) LIKE ? OR b.isbn LIKE ? OR LOWER(COALESCE(c.name, 'Other')) LIKE ?
       ORDER BY b.rating DESC
       LIMIT 25
     `).all(clean, clean, clean, clean) as any[];
@@ -142,8 +142,8 @@ export const booksController = {
         b.id,
         b.title,
         a.name as author,
-        c.name as category,
-        c.slug as categorySlug,
+        COALESCE(c.name, 'Other') as category,
+        COALESCE(c.slug, 'other') as categorySlug,
         b.price,
         b.discount,
         b.rating,
@@ -157,11 +157,11 @@ export const booksController = {
         b.description,
         (SELECT COUNT(*) FROM reviews r WHERE r.book_id = b.id) as reviewCount
       FROM books b
-      JOIN authors a ON b.author_id = a.id
-      JOIN categories c ON b.category_id = c.id
-      WHERE c.slug = ? OR LOWER(c.name) = LOWER(?)
+      LEFT JOIN authors a ON b.author_id = a.id
+      LEFT JOIN categories c ON b.category_id = c.id
+      WHERE c.slug = ? OR LOWER(c.name) = LOWER(?) OR (c.slug IS NULL AND ? = 'other')
       ORDER BY b.rating DESC
-    `).all(category, category) as any[];
+    `).all(category, category, category.toLowerCase()) as any[];
 
     res.json({ books, count: books.length, category });
   },
@@ -177,8 +177,8 @@ export const booksController = {
         b.title,
         a.name as author,
         a.bio as authorBio,
-        c.name as category,
-        c.slug as categorySlug,
+        COALESCE(c.name, 'Other') as category,
+        COALESCE(c.slug, 'other') as categorySlug,
         b.price,
         b.discount,
         b.rating,
@@ -192,8 +192,8 @@ export const booksController = {
         b.description,
         b.views
       FROM books b
-      JOIN authors a ON b.author_id = a.id
-      JOIN categories c ON b.category_id = c.id
+      LEFT JOIN authors a ON b.author_id = a.id
+      LEFT JOIN categories c ON b.category_id = c.id
       WHERE ${isNumeric ? 'b.id = ?' : 'b.isbn = ?'}
     `).get(isNumeric ? Number(id) : id) as any;
 
@@ -258,15 +258,16 @@ export const booksController = {
     // Find or create author
     let authorRow = db.prepare('SELECT id FROM authors WHERE LOWER(name) = LOWER(?)').get(author.trim()) as any;
     if (!authorRow) {
-      const insAuthor = db.prepare('INSERT INTO authors (name) VALUES (?)').run(author.trim());
+      const insAuthor = db.prepare('INSERT INTO authors (name, bio) VALUES (?, ?)').run(author.trim(), 'Campus Contributor');
       authorRow = { id: insAuthor.lastInsertRowid };
     }
 
-    // Find or create category
-    let catRow = db.prepare('SELECT id FROM categories WHERE LOWER(name) = LOWER(?) OR slug = LOWER(?)').get(category.trim(), category.trim()) as any;
+    // Find or create category (with safe fallback to 'Other')
+    const effectiveCategory = (category && typeof category === 'string' && category.trim()) ? category.trim() : 'Other';
+    let catRow = db.prepare('SELECT id FROM categories WHERE LOWER(name) = LOWER(?) OR slug = LOWER(?)').get(effectiveCategory, effectiveCategory) as any;
     if (!catRow) {
-      const slug = category.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      const insCat = db.prepare('INSERT INTO categories (name, slug) VALUES (?, ?)').run(category.trim(), slug);
+      const slug = effectiveCategory.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const insCat = db.prepare('INSERT INTO categories (name, slug) VALUES (?, ?)').run(effectiveCategory, slug);
       catRow = { id: insCat.lastInsertRowid };
     }
 
@@ -296,12 +297,12 @@ export const booksController = {
     const newBookId = Number(insertResult.lastInsertRowid);
     const createdBook = db.prepare(`
       SELECT 
-        b.id, b.title, a.name as author, c.name as category, c.slug as categorySlug,
+        b.id, b.title, a.name as author, COALESCE(c.name, 'Other') as category, COALESCE(c.slug, 'other') as categorySlug,
         b.price, b.discount, b.rating, b.stock, b.cover_image as coverImage,
         b.isbn, b.publisher, b.pages, b.publication_year as year, b.language, b.description
       FROM books b
-      JOIN authors a ON b.author_id = a.id
-      JOIN categories c ON b.category_id = c.id
+      LEFT JOIN authors a ON b.author_id = a.id
+      LEFT JOIN categories c ON b.category_id = c.id
       WHERE b.id = ?
     `).get(newBookId);
 
@@ -313,6 +314,8 @@ export const booksController = {
     const { id } = req.params;
     const {
       title,
+      author,
+      category,
       price,
       discount,
       stock,
@@ -328,9 +331,37 @@ export const booksController = {
       return res.status(404).json({ error: 'Book not found.' });
     }
 
+    // Optional Author Update
+    let authorId = existing.author_id;
+    if (author && typeof author === 'string' && author.trim()) {
+      let authorRow = db.prepare('SELECT id FROM authors WHERE LOWER(name) = LOWER(?)').get(author.trim()) as any;
+      if (!authorRow) {
+        const insAuthor = db.prepare('INSERT INTO authors (name) VALUES (?)').run(author.trim());
+        authorId = insAuthor.lastInsertRowid;
+      } else {
+        authorId = authorRow.id;
+      }
+    }
+
+    // Optional Category Update
+    let categoryId = existing.category_id;
+    if (category && typeof category === 'string' && category.trim()) {
+      const trimmedCategory = category.trim();
+      let catRow = db.prepare('SELECT id FROM categories WHERE LOWER(name) = LOWER(?) OR slug = LOWER(?)').get(trimmedCategory, trimmedCategory) as any;
+      if (!catRow) {
+        const slug = trimmedCategory.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        const insCat = db.prepare('INSERT INTO categories (name, slug) VALUES (?, ?)').run(trimmedCategory, slug);
+        categoryId = insCat.lastInsertRowid;
+      } else {
+        categoryId = catRow.id;
+      }
+    }
+
     db.prepare(`
       UPDATE books SET
         title = COALESCE(?, title),
+        author_id = ?,
+        category_id = ?,
         price = COALESCE(?, price),
         discount = COALESCE(?, discount),
         stock = COALESCE(?, stock),
@@ -342,6 +373,8 @@ export const booksController = {
       WHERE id = ?
     `).run(
       title ? title.trim() : null,
+      authorId,
+      categoryId,
       price !== undefined ? Number(price) : null,
       discount !== undefined ? Number(discount) : null,
       stock !== undefined ? Number(stock) : null,
@@ -355,27 +388,58 @@ export const booksController = {
 
     const updatedBook = db.prepare(`
       SELECT 
-        b.id, b.title, a.name as author, c.name as category, c.slug as categorySlug,
+        b.id, b.title, a.name as author, COALESCE(c.name, 'Other') as category, COALESCE(c.slug, 'other') as categorySlug,
         b.price, b.discount, b.rating, b.stock, b.cover_image as coverImage,
         b.isbn, b.publisher, b.pages, b.publication_year as year, b.language, b.description
       FROM books b
-      JOIN authors a ON b.author_id = a.id
-      JOIN categories c ON b.category_id = c.id
+      LEFT JOIN authors a ON b.author_id = a.id
+      LEFT JOIN categories c ON b.category_id = c.id
       WHERE b.id = ?
     `).get(id);
 
     res.json({ success: true, book: updatedBook });
   },
 
-  // DELETE /api/books/:id (Admin required)
-  deleteBook: (req: Request, res: Response) => {
+  // PATCH /api/books/:id/stock (Admin required)
+  updateStock: (req: Request, res: Response) => {
     const { id } = req.params;
-    const existing = db.prepare('SELECT id, title FROM books WHERE id = ?').get(id) as any;
-    if (!existing) {
+    const { stock } = req.body;
+
+    if (stock === undefined || isNaN(Number(stock)) || Number(stock) < 0) {
+      return res.status(400).json({ error: 'Valid stock number (>= 0) is required.' });
+    }
+
+    const result = db.prepare('UPDATE books SET stock = ? WHERE id = ?').run(Number(stock), id);
+    if (result.changes === 0) {
       return res.status(404).json({ error: 'Book not found.' });
     }
 
-    db.prepare('DELETE FROM books WHERE id = ?').run(id);
-    res.json({ success: true, message: `"${existing.title}" deleted from catalog.`, bookId: Number(id) });
+    res.json({ success: true, message: 'Stock level updated successfully.', bookId: Number(id), stock: Number(stock) });
+  },
+
+  // DELETE /api/books/:id (Admin required)
+  deleteBook: (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const existing = db.prepare('SELECT id, title FROM books WHERE id = ?').get(id) as any;
+      if (!existing) {
+        return res.status(404).json({ error: 'Book not found.' });
+      }
+
+      // Perform complete cascade deletion across dependent tables in transaction
+      db.transaction(() => {
+        db.prepare('DELETE FROM cart_items WHERE book_id = ?').run(id);
+        db.prepare('DELETE FROM wishlist WHERE book_id = ?').run(id);
+        db.prepare('DELETE FROM reviews WHERE book_id = ?').run(id);
+        db.prepare('DELETE FROM book_views WHERE book_id = ?').run(id);
+        db.prepare('DELETE FROM order_items WHERE book_id = ?').run(id);
+        db.prepare('DELETE FROM books WHERE id = ?').run(id);
+      })();
+
+      res.json({ success: true, message: `"${existing.title}" deleted from catalog.`, bookId: Number(id) });
+    } catch (err: any) {
+      console.error('Delete book error:', err);
+      res.status(500).json({ error: err.message || 'Database error occurred while deleting book.' });
+    }
   }
 };

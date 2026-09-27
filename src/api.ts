@@ -72,6 +72,12 @@ export const api = {
 
   getMe: () => request<{ user: UserSession }>('/api/auth/me'),
 
+  loginWithGoogle: (data?: { credential?: string; email?: string; name?: string; googleId?: string }) =>
+    request<{ user: UserSession; token: string }>('/api/auth/google', {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    }),
+
   getDemoUsers: () => request<any>('/api/auth/demo-users'),
 
   // Books & Categories

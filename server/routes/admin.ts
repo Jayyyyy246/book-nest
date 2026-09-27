@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db } from '../db/database.js';
 import { requireAdmin, AuthRequest } from '../middleware/auth.js';
+import { booksController } from '../controllers/booksController.js';
 
 const router = Router();
 
@@ -140,132 +141,16 @@ router.post('/books', (req, res) => {
     coverImage = 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=600&auto=format&fit=crop&q=80'
   } = req.body;
 
-  if (!title || !author || !category || !price || !isbn) {
-    return res.status(400).json({ error: 'Title, author, category, price, and ISBN are required.' });
-  }
-
-  // Ensure category exists
-  let cat = db.prepare('SELECT id FROM categories WHERE name = ? OR slug = ?').get(category, category.toLowerCase().replace(/\s+/g, '-')) as any;
-  if (!cat) {
-    const slug = category.toLowerCase().replace(/\s+/g, '-');
-    const catInsert = db.prepare('INSERT INTO categories (name, slug, description, icon, color, accent_bg) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(category, slug, `${category} shelf collection`, 'fa-solid fa-book', 'text-amber-600', 'bg-amber-50');
-    cat = { id: catInsert.lastInsertRowid };
-  }
-
-  // Ensure author exists
-  let auth = db.prepare('SELECT id FROM authors WHERE name = ?').get(author) as any;
-  if (!auth) {
-    const authInsert = db.prepare('INSERT INTO authors (name, bio) VALUES (?, ?)').run(author, `Author of ${title}`);
-    auth = { id: authInsert.lastInsertRowid };
-  }
-
-  try {
-    const bookInsert = db.prepare(`
-      INSERT INTO books (
-        title, author_id, category_id, isbn, publisher, publication_year,
-        pages, language, description, price, discount, stock, cover_image, rating
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 4.8)
-    `).run(
-      title,
-      auth.id,
-      cat.id,
-      isbn,
-      publisher,
-      year,
-      pages,
-      language,
-      description,
-      price,
-      discount,
-      stock,
-      coverImage
-    );
-
-    const newBookId = bookInsert.lastInsertRowid;
-    const newBook = db.prepare(`
-      SELECT 
-        b.id, b.title, a.name as author, c.name as category, c.slug as categorySlug,
-        b.price, b.discount, b.rating, b.stock, b.cover_image as coverImage,
-        b.isbn, b.publisher, b.pages, b.publication_year as year, b.language, b.description
-      FROM books b
-      JOIN authors a ON b.author_id = a.id
-      JOIN categories c ON b.category_id = c.id
-      WHERE b.id = ?
-    `).get(newBookId);
-
-    res.status(201).json({ success: true, message: `Added "${title}" to catalog.`, book: newBook });
-  } catch (err: any) {
-    if (err.message.includes('UNIQUE constraint failed: books.isbn')) {
-      return res.status(400).json({ error: 'A book with this ISBN already exists.' });
-    }
-    res.status(400).json({ error: err.message });
-  }
+  return booksController.createBook(req, res);
 });
 
 // Update book details
-router.put('/books/:id', (req, res) => {
-  const { id } = req.params;
-  const { title, price, discount, stock, isbn, description, coverImage } = req.body;
-
-  const result = db.prepare(`
-    UPDATE books
-    SET 
-      title = COALESCE(?, title),
-      price = COALESCE(?, price),
-      discount = COALESCE(?, discount),
-      stock = COALESCE(?, stock),
-      isbn = COALESCE(?, isbn),
-      description = COALESCE(?, description),
-      cover_image = COALESCE(?, cover_image)
-    WHERE id = ?
-  `).run(title, price, discount, stock, isbn, description, coverImage, id);
-
-  if (result.changes === 0) {
-    return res.status(404).json({ error: 'Book not found.' });
-  }
-
-  const updated = db.prepare(`
-    SELECT 
-      b.id, b.title, a.name as author, c.name as category, c.slug as categorySlug,
-      b.price, b.discount, b.rating, b.stock, b.cover_image as coverImage,
-      b.isbn, b.publisher, b.pages, b.publication_year as year, b.language, b.description
-    FROM books b
-    JOIN authors a ON b.author_id = a.id
-    JOIN categories c ON b.category_id = c.id
-    WHERE b.id = ?
-  `).get(id);
-
-  res.json({ success: true, message: `Updated "${title}".`, book: updated });
-});
+router.put('/books/:id', booksController.updateBook);
 
 // Update stock level
-router.patch('/books/:id/stock', (req, res) => {
-  const { id } = req.params;
-  const { stock } = req.body;
-
-  if (stock === undefined || isNaN(Number(stock)) || Number(stock) < 0) {
-    return res.status(400).json({ error: 'Valid stock number (>= 0) is required.' });
-  }
-
-  const result = db.prepare('UPDATE books SET stock = ? WHERE id = ?').run(Number(stock), id);
-  if (result.changes === 0) {
-    return res.status(404).json({ error: 'Book not found.' });
-  }
-
-  res.json({ success: true, message: 'Stock levels updated successfully.', bookId: Number(id), stock: Number(stock) });
-});
+router.patch('/books/:id/stock', booksController.updateStock);
 
 // Delete book
-router.delete('/books/:id', (req, res) => {
-  const { id } = req.params;
-
-  const result = db.prepare('DELETE FROM books WHERE id = ?').run(id);
-  if (result.changes === 0) {
-    return res.status(404).json({ error: 'Book not found.' });
-  }
-
-  res.json({ success: true, message: 'Book deleted from catalog.', bookId: Number(id) });
-});
+router.delete('/books/:id', booksController.deleteBook);
 
 export default router;

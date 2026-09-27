@@ -26,6 +26,9 @@ router.put('/:id', requireAdmin, booksController.updateBook);
 // DELETE /api/books/:id (Admin required)
 router.delete('/:id', requireAdmin, booksController.deleteBook);
 
+// PATCH /api/books/:id/stock (Admin required)
+router.patch('/:id/stock', requireAdmin, booksController.updateStock);
+
 // GET /api/books/:id/reviews
 router.get('/:id/reviews', reviewsController.getBookReviews);
 
