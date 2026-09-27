@@ -46,14 +46,20 @@ export async function analyzeBookCover(
   try {
     const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z0-9.+_-]+;base64,/, '');
 
-    const response = await client.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
+    const candidateModels = ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+    let response: any = null;
+    let lastError: any = null;
+
+    for (const model of candidateModels) {
+      try {
+        response = await client.models.generateContent({
+          model,
+          contents: [
             {
-              text: `You are a high-precision optical book scanner and OCR analyzer.
+              role: 'user',
+              parts: [
+                {
+                  text: `You are a high-precision optical book scanner and OCR analyzer.
 Inspect this image carefully. Extract ONLY real text and barcodes actually visible in this image.
 Do NOT guess, invent, or hallucinate titles, authors, or ISBNs.
 Books are often photographed from the front cover, spine, or back cover. Front covers typically do NOT display an ISBN barcode — that is expected. Focus heavily on legibly extracting the prominent title and author from the front cover.
@@ -71,17 +77,30 @@ Return a valid JSON object matching this schema:
 }
 
 Output ONLY the raw JSON object. Do not wrap in markdown tags or add conversational text.`
-            },
-            {
-              inlineData: {
-                data: cleanBase64,
-                mimeType
-              }
+                },
+                {
+                  inlineData: {
+                    data: cleanBase64,
+                    mimeType
+                  }
+                }
+              ]
             }
           ]
+        });
+        if (response && response.text) {
+          break;
         }
-      ]
-    });
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`Gemini model ${model} unavailable, trying fallback:`, err?.message || err);
+      }
+    }
+
+    if (!response || !response.text) {
+      console.error('All Gemini models failed:', lastError);
+      return null;
+    }
 
     const rawText = response.text || '';
     const cleanJsonText = rawText.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();

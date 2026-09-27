@@ -122,10 +122,22 @@ Available Books in campus warehouse catalog: [${catalogTitles}].
 
 Provide a warm, intelligent 2-3 sentence recommendation explaining which available book IDs best fit their request. Return STRICT JSON with keys: "explanation" (string), "recommendedBookIds" (array of numbers). Do not include markdown code block syntax.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt
-    });
+    const candidateModels = ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+    let response: any = null;
+    for (const model of candidateModels) {
+      try {
+        response = await ai.models.generateContent({
+          model,
+          contents: prompt
+        });
+        if (response && response.text) break;
+      } catch (err) {
+        console.warn(`Recommendations AI model ${model} failed, trying fallback...`);
+      }
+    }
+    if (!response || !response.text) {
+      throw new Error('AI recommendation generation failed across all candidate models');
+    }
 
     const text = response.text || '{}';
     const cleanJson = text.replace(/```json/g, '').replace(/```/g, '').trim();
