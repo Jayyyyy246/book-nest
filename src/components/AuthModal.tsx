@@ -30,6 +30,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
 
+  const [showPassword, setShowPassword] = useState(false);
+
   // Lamp state: starts switched OFF per Phase 4 redesign requirements
   const [isLampOn, setIsLampOn] = useState(false);
   const [isFormRevealed, setIsFormRevealed] = useState(false);
@@ -67,6 +69,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
       setIsLampOn(false);
       setIsFormRevealed(false);
       setIsTransitioning(false);
+      setShowPassword(false);
       if (transitionTimerRef.current) {
         clearTimeout(transitionTimerRef.current);
       }
@@ -203,7 +206,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
         <button
           onClick={onClose}
           aria-label="Close authentication modal"
-          className="absolute top-4 right-4 z-30 w-9 h-9 rounded-full bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 cursor-pointer shadow-sm border border-slate-700/60"
+          className="absolute top-4 right-4 z-30 w-9 h-9 rounded-full bg-slate-900/80 hover:bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 cursor-pointer shadow-sm border border-slate-700/60"
         >
           <i className="fa-solid fa-xmark text-sm" aria-hidden="true"></i>
         </button>
@@ -227,14 +230,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
           }}
         >
           {/* Header */}
-          <div className="text-center mb-5">
-            <div className="w-11 h-11 rounded-2xl bg-amber-500 text-slate-950 flex items-center justify-center mx-auto mb-2.5 text-lg font-bold shadow-md shadow-amber-500/20">
-              <i className="fa-solid fa-book-bookmark" aria-hidden="true"></i>
+          <div className="text-center mb-4">
+            <div className="booknest-auth-badge" aria-hidden="true">
+              <i className="fa-solid fa-book-bookmark text-base"></i>
             </div>
-            <h2 id="auth-modal-title" className="font-serif font-black text-2xl text-slate-950">
+            <h2 id="auth-modal-title" className="booknest-auth-title">
               {tab === 'login' ? 'Welcome Back to BookNest' : 'Create Campus Account'}
             </h2>
-            <p className="text-xs text-slate-500 mt-1">
+            <p className="booknest-auth-subtitle">
               {tab === 'login' ? 'Sign in to access your orders, saved wishlist, and cart' : 'Join scholars and professors across university departments'}
             </p>
           </div>
@@ -245,12 +248,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
             onClick={handleGoogleSignIn}
             disabled={googleLoading || loading}
             tabIndex={isFormRevealed ? 0 : -1}
-            className="w-full py-2.5 px-4 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-700 text-xs font-semibold shadow-2xs hover:shadow-xs transition-all flex items-center justify-center gap-3 disabled:opacity-70 disabled:cursor-not-allowed cursor-pointer"
+            className="booknest-auth-google-btn"
           >
             {googleLoading ? (
               <i className="fa-solid fa-circle-notch fa-spin text-amber-500 text-sm" aria-hidden="true"></i>
             ) : (
-              <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
+              <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
                 <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.65v3.03h3.88c2.27-2.09 3.665-5.17 3.665-9.12z" />
                 <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.03c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.13C3.28 21.43 7.33 24 12 24z" />
                 <path fill="#FBBC05" d="M5.28 14.29c-.25-.72-.38-1.49-.38-2.29s.13-1.57.38-2.29V6.58H1.25C.45 8.18 0 10.03 0 12s.45 3.82 1.25 5.42l4.03-3.13z" />
@@ -261,30 +264,34 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
           </button>
 
           {/* Divider */}
-          <div className="relative my-3.5">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-slate-200"></div>
+          <div className="booknest-auth-divider">
+            <div className="booknest-auth-divider-line" aria-hidden="true">
+              <div></div>
             </div>
-            <div className="relative flex justify-center text-[10px] uppercase tracking-wider">
-              <span className="bg-white px-2 text-slate-400 font-semibold">Or continue with campus email</span>
+            <div className="booknest-auth-divider-pill">
+              <span>Or continue with campus email</span>
             </div>
           </div>
 
           {/* Form Switcher Tabs */}
-          <div className="grid grid-cols-2 p-1 bg-slate-100 rounded-xl mb-3.5 text-xs font-semibold">
+          <div className="booknest-auth-tab-bar" role="tablist">
             <button
               type="button"
+              role="tab"
+              aria-selected={tab === 'login'}
               tabIndex={isFormRevealed ? 0 : -1}
               onClick={() => { setTab('login'); setError(null); }}
-              className={`py-2 rounded-lg transition-all cursor-pointer ${tab === 'login' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+              className={`booknest-auth-tab-btn ${tab === 'login' ? 'active' : ''}`}
             >
               Sign In
             </button>
             <button
               type="button"
+              role="tab"
+              aria-selected={tab === 'register'}
               tabIndex={isFormRevealed ? 0 : -1}
               onClick={() => { setTab('register'); setError(null); }}
-              className={`py-2 rounded-lg transition-all cursor-pointer ${tab === 'register' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+              className={`booknest-auth-tab-btn ${tab === 'register' ? 'active' : ''}`}
             >
               Create Account
             </button>
@@ -292,17 +299,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
 
           {/* Error Alert */}
           {error && (
-            <div role="alert" className="mb-3.5 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
-              <i className="fa-solid fa-circle-exclamation text-rose-600 shrink-0" aria-hidden="true"></i>
+            <div role="alert" className="booknest-auth-error-alert">
+              <i className="fa-solid fa-circle-exclamation shrink-0" aria-hidden="true"></i>
               <span>{error}</span>
             </div>
           )}
 
           {/* Main Credentials Form */}
-          <form onSubmit={handleSubmit} className="space-y-3.5 text-xs">
+          <form onSubmit={handleSubmit} className="text-xs">
             {tab === 'register' && (
-              <div>
-                <label htmlFor="auth-name" className="block text-slate-700 font-semibold mb-1">Full Name</label>
+              <div className="booknest-auth-field">
+                <label htmlFor="auth-name" className="booknest-auth-label">Full Name</label>
                 <input
                   id="auth-name"
                   type="text"
@@ -311,13 +318,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
                   value={name}
                   onChange={e => setName(e.target.value)}
                   placeholder="e.g. Aditya Chauhan"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  className="booknest-auth-input"
                 />
               </div>
             )}
 
-            <div>
-              <label htmlFor="auth-email" className="block text-slate-700 font-semibold mb-1">Campus Email</label>
+            <div className="booknest-auth-field">
+              <label htmlFor="auth-email" className="booknest-auth-label">Campus Email</label>
               <input
                 ref={emailInputRef}
                 id="auth-email"
@@ -327,27 +334,40 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 placeholder="e.g. student@booknest.com"
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                className="booknest-auth-input"
               />
             </div>
 
-            <div>
-              <label htmlFor="auth-password" className="block text-slate-700 font-semibold mb-1">Password</label>
-              <input
-                id="auth-password"
-                type="password"
-                required
-                tabIndex={isFormRevealed ? 0 : -1}
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none"
-              />
+            <div className="booknest-auth-field">
+              <label htmlFor="auth-password" className="booknest-auth-label">Password</label>
+              <div className="booknest-auth-input-wrapper">
+                <input
+                  id="auth-password"
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  tabIndex={isFormRevealed ? 0 : -1}
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="booknest-auth-input"
+                  style={{ paddingRight: '36px' }}
+                />
+                <button
+                  type="button"
+                  tabIndex={isFormRevealed ? 0 : -1}
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="booknest-auth-eye-btn"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  title={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  <i className={`fa-regular ${showPassword ? 'fa-eye-slash' : 'fa-eye'}`} aria-hidden="true"></i>
+                </button>
+              </div>
             </div>
 
             {tab === 'register' && (
-              <div>
-                <label htmlFor="auth-phone" className="block text-slate-700 font-semibold mb-1">Phone Number (Optional)</label>
+              <div className="booknest-auth-field">
+                <label htmlFor="auth-phone" className="booknest-auth-label">Phone Number (Optional)</label>
                 <input
                   id="auth-phone"
                   type="tel"
@@ -355,7 +375,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
                   value={phone}
                   onChange={e => setPhone(e.target.value)}
                   placeholder="+91 98765 43210"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  className="booknest-auth-input"
                 />
               </div>
             )}
@@ -364,7 +384,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
               type="submit"
               disabled={loading || !isLampOn}
               tabIndex={isFormRevealed ? 0 : -1}
-              className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-amber-600 text-amber-50 hover:text-slate-950 font-bold shadow-md transition-all flex items-center justify-center gap-2 mt-2 cursor-pointer disabled:opacity-50"
+              className="booknest-auth-submit-btn"
             >
               {loading ? (
                 <i className="fa-solid fa-circle-notch fa-spin" aria-hidden="true"></i>
@@ -375,30 +395,34 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
           </form>
 
           {/* Quick Demo Switcher with Real Credentials */}
-          <div className="mt-5 pt-4 border-t border-slate-100">
-            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider text-center mb-2">
+          <div className="booknest-auth-demo-section">
+            <div className="booknest-auth-demo-title">
               Instant Test Credentials
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="booknest-auth-demo-grid">
               <button
                 type="button"
+                data-testid="demo-student-btn"
+                disabled={loading}
                 tabIndex={isFormRevealed ? 0 : -1}
                 onClick={() => handleDemoLogin('student')}
-                className="px-2.5 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                className="booknest-auth-demo-student-btn"
                 title="Log in as demo student (Aditya Chauhan)"
               >
-                <i className="fa-solid fa-user-graduate text-amber-600" aria-hidden="true"></i>
+                <i className="fa-solid fa-user-graduate" aria-hidden="true"></i>
                 <span>Demo Student</span>
-                <span className="text-[10px] text-amber-700/80 font-normal hidden sm:inline">(Aditya)</span>
+                <span className="text-[10px] opacity-75 font-normal hidden sm:inline">(Aditya)</span>
               </button>
               <button
                 type="button"
+                data-testid="demo-admin-btn"
+                disabled={loading}
                 tabIndex={isFormRevealed ? 0 : -1}
                 onClick={() => handleDemoLogin('admin')}
-                className="px-2.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                className="booknest-auth-demo-admin-btn"
                 title="Log in as campus administrator"
               >
-                <i className="fa-solid fa-shield-halved text-emerald-600" aria-hidden="true"></i>
+                <i className="fa-solid fa-shield-halved" aria-hidden="true"></i>
                 <span>Demo Admin</span>
               </button>
             </div>

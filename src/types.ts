@@ -1,3 +1,10 @@
+export type AppView = 'store' | 'catalog' | 'scanner' | 'admin' | 'orders' | 'wishlist' | 'book';
+
+export interface CategoryItem {
+  slug: string;
+  label: string;
+}
+
 export interface Book {
   id: number;
   title: string;

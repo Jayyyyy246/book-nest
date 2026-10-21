@@ -140,7 +140,16 @@ async function runAiAdvisorTestSuite() {
     await signInBtn.click();
     await page.waitForTimeout(400);
 
-    const demoStudentBtn = page.locator('button:has-text("Aditya Chauhan")');
+    const stringHandle = page.locator('.booknest-string-handle');
+    if (await stringHandle.isVisible()) {
+      const isOff = (await page.locator('.booknest-auth-dialog').getAttribute('class'))?.includes('lamp-off');
+      if (isOff) {
+        await stringHandle.click();
+        await page.waitForTimeout(700);
+      }
+    }
+
+    const demoStudentBtn = page.locator('[data-testid="demo-student-btn"], button:has-text("Demo Student"), button:has-text("Aditya Chauhan")').first();
     if (await demoStudentBtn.isVisible()) {
       await demoStudentBtn.click();
     } else {

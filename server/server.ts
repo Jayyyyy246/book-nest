@@ -65,23 +65,10 @@ app.use('/api/reviews', reviewsRoutes);
 app.use('/api/coupons', couponsRoutes);
 app.use('/api/recommendations', recommendationsRoutes);
 
-// Global Error Handler
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  if (err.type === 'entity.too.large' || err.status === 413) {
-    return res.status(413).json({ error: 'Request payload exceeds maximum allowed size.' });
-  }
+import { errorHandler } from './middleware/errorHandler.js';
 
-  // Handle malformed JSON body from body-parser
-  if (err instanceof SyntaxError && (err as any).status === 400 && 'body' in err) {
-    return res.status(400).json({ error: 'Malformed JSON payload in request body.' });
-  }
-
-  console.error('API Error:', err.message || err);
-  const isProd = config.nodeEnv === 'production';
-  res.status(err.status || 500).json({
-    error: isProd ? 'Internal server error' : (err.message || 'Internal server error')
-  });
-});
+// Centralized Global Error Handler
+app.use(errorHandler);
 
 export function startServer() {
   return app.listen(config.port, () => {

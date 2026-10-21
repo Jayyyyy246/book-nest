@@ -45,6 +45,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({
   // Bundle offer state
   const [bundleOffer, setBundleOffer] = useState<any | null>(null);
   const [bundleAdded, setBundleAdded] = useState(false);
+  const [imageError, setImageError] = useState(false);
 
   // Modal accessibility: focus trapping, body scroll lock, Escape key, and focus restoration
   const { modalRef } = useModalA11y({
@@ -58,6 +59,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({
       setActiveTab('details');
       setSelectedGalleryAngle('cover');
       setReviewMsg(null);
+      setImageError(false);
 
       // Load reviews
       setLoadingReviews(true);
@@ -177,14 +179,36 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({
                 {/* Left Column: Product Gallery */}
                 <div className="md:col-span-5 flex flex-col items-center justify-center">
                   <div className="relative w-48 sm:w-56 aspect-[2/3] rounded-r-lg rounded-l-xs overflow-hidden book-shadow-3d book-spine border border-slate-900/10">
-                    <img
-                      src={book.coverImage}
-                      alt={`Cover of ${book.title}`}
-                      className={`w-full h-full object-cover transition-all duration-300 ${
-                        selectedGalleryAngle === 'spine' ? 'scale-110 object-left' :
-                        selectedGalleryAngle === 'jacket' ? 'brightness-95 contrast-105' : 'scale-100'
-                      }`}
-                    />
+                    {imageError || !book.coverImage ? (
+                      <div className="w-full h-full bg-gradient-to-br from-amber-700 via-amber-800 to-slate-900 p-4 flex flex-col justify-between text-white select-none">
+                        <div>
+                          <span className="text-[10px] uppercase font-bold text-amber-300 tracking-wider block">
+                            {book.category}
+                          </span>
+                          <h3 className="font-serif font-black text-sm leading-snug mt-2 line-clamp-3">
+                            {book.title}
+                          </h3>
+                        </div>
+                        <div>
+                          <p className="text-xs text-amber-200/90 font-medium line-clamp-1">
+                            {book.author}
+                          </p>
+                          <span className="text-[10px] text-amber-300/60 font-mono block mt-1">
+                            ISBN {book.isbn ? book.isbn.slice(-4) : 'N/A'}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <img
+                        src={book.coverImage}
+                        alt={`Cover of ${book.title}`}
+                        onError={() => setImageError(true)}
+                        className={`w-full h-full object-cover transition-all duration-300 ${
+                          selectedGalleryAngle === 'spine' ? 'scale-110 object-left' :
+                          selectedGalleryAngle === 'jacket' ? 'brightness-95 contrast-105' : 'scale-100'
+                        }`}
+                      />
+                    )}
                   </div>
 
                   {/* Gallery Thumbnails */}

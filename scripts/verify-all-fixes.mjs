@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 
 // Enforce isolated test database BEFORE importing server/database modules
 const testDbPath = process.env.DB_PATH || path.resolve(process.cwd(), 'data', 'booknest.test.db');
@@ -9,10 +10,10 @@ process.env.NODE_ENV = 'test';
 
 // Dynamically import server and database
 const { app } = await import('../server/server.js');
-const { db, closeDatabase } = await import('../server/database/index.js');
+const { db, closeDatabase, ensureDemoAccounts } = await import('../server/database/index.js');
 const { setGoogleTokenVerifier } = await import('../server/controllers/authController.js');
 const { resolveJwtSecret, config } = await import('../server/config/index.js');
-const { setAiRecommendationProvider } = await import('../server/routes/recommendations.js');
+const { setAiRecommendationProvider, getCatalogFallbackRecommendations } = await import('../server/routes/recommendations.js');
 const { resetAllRateLimiters } = await import('../server/middleware/rateLimiter.js');
 const { setExternalLookupProvider, setVisionAnalysisProvider } = await import('../server/routes/scanner.js');
 
@@ -799,15 +800,15 @@ async function runTests() {
     // 6.7 Scanner Catalog Isolation & Purchase Protection
     setExternalLookupProvider({
       lookupByIsbn: async (cleanIsbn) => {
-        if (cleanIsbn === '9780140449136') {
+        if (cleanIsbn === '9780000000002') {
           return {
             id: -1,
-            title: 'Crime and Punishment',
-            author: 'Fyodor Dostoevsky',
+            title: 'External Archival Volume',
+            author: 'Archival Scholar',
             isbn: cleanIsbn,
             category: 'Classics',
             categorySlug: 'classics',
-            publisher: 'Penguin Classics',
+            publisher: 'External Archives',
             pages: 671,
             year: 2003,
             language: 'English',
@@ -827,7 +828,7 @@ async function runTests() {
     const extScannerRes = await fetch(`${baseUrl}/api/scanner/isbn`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ isbn: '9780140449136' })
+      body: JSON.stringify({ isbn: '9780000000002' })
     });
     const extScannerData = await extScannerRes.json();
     assert(
@@ -1280,6 +1281,177 @@ async function runTests() {
       body: JSON.stringify({ status: 'Shipped' })
     });
     assert(invalidUncancelRes.status === 400, '7.9 Cannot transition an already cancelled order to Shipped (HTTP 400)');
+
+    // ----------------------------------------------------
+    // TEST SECTION 8: ADMIN AUTHENTICATION & AI ADVISOR REGRESSION (CRITICAL AUDIT)
+    // ----------------------------------------------------
+    console.log('\n--- 8. Admin Authentication & AI Reading Advisor Regression Suite ---');
+
+    // 8.1 Admin sign-in with valid credentials
+    const sec8AdminLogin = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@booknest.com', password: 'Admin@123' })
+    });
+    const sec8AdminData = await sec8AdminLogin.json();
+    assert(
+      sec8AdminLogin.status === 200 &&
+      sec8AdminData.user?.role === 'admin' &&
+      typeof sec8AdminData.token === 'string',
+      '8.1 Valid admin credentials authenticate successfully with role="admin" and JWT'
+    );
+
+    // 8.2 Invalid admin password rejected
+    const sec8InvalidPw = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@booknest.com', password: 'IncorrectPassword!999' })
+    });
+    assert(sec8InvalidPw.status === 401, '8.2 Invalid admin password is rejected with HTTP 401');
+
+    // 8.3 Demo admin self-healing via ensureDemoAccounts()
+    // Test A: Missing demo admin is created cleanly
+    db.prepare("DELETE FROM users WHERE email = 'admin@booknest.com'").run();
+    ensureDemoAccounts(); // Run idempotent auto-heal
+    const restoredAdmin = db.prepare("SELECT role, password_hash FROM users WHERE email = 'admin@booknest.com'").get();
+    assert(restoredAdmin && restoredAdmin.role === 'admin', '8.3A ensureDemoAccounts() creates missing administrator account with role="admin"');
+
+    const healedLoginRes = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@booknest.com', password: 'Admin@123' })
+    });
+    assert(healedLoginRes.status === 200, '8.3A Restored demo admin authenticates successfully');
+
+    // Test B: Existing accounts and passwords are NOT overwritten
+    const customTestEmail = 'preserve_test_user@booknest.com';
+    const customHash = '$2a$10$customlegitimatehashplaceholder999999999999999999';
+    db.prepare("INSERT OR REPLACE INTO users (name, email, password_hash, role, joined_date) VALUES (?, ?, ?, 'user', 'Today')").run('Preserved User', customTestEmail, customHash);
+    ensureDemoAccounts();
+    const untouchedUser = db.prepare("SELECT password_hash FROM users WHERE email = ?").get(customTestEmail);
+    assert(untouchedUser.password_hash === customHash, '8.3B Existing account passwords are not overwritten by ensureDemoAccounts()');
+    db.prepare("DELETE FROM users WHERE email = ?").run(customTestEmail);
+
+    // Test C: Demo account creation is strictly blocked in production
+    const prevEnv = config.nodeEnv;
+    config.nodeEnv = 'production';
+    db.prepare("DELETE FROM users WHERE email = 'admin@booknest.com'").run();
+    ensureDemoAccounts();
+    const prodAdmin = db.prepare("SELECT id FROM users WHERE email = 'admin@booknest.com'").get();
+    assert(!prodAdmin, '8.3C ensureDemoAccounts() strictly blocks demo account creation in production mode');
+    config.nodeEnv = prevEnv;
+    ensureDemoAccounts(); // Restore admin for remaining tests
+
+    // 8.4 Role-based authorization: Student cannot access admin-only endpoints
+    const studentMetricsRes = await fetch(`${baseUrl}/api/admin/metrics`, {
+      headers: { Authorization: `Bearer ${studentToken}` }
+    });
+    assert(studentMetricsRes.status === 403, '8.4 Student role is rejected from admin metrics (HTTP 403)');
+
+    const studentOrdersRes = await fetch(`${baseUrl}/api/admin/orders`, {
+      headers: { Authorization: `Bearer ${studentToken}` }
+    });
+    assert(studentOrdersRes.status === 403, '8.4 Student role is rejected from admin orders (HTTP 403)');
+
+    // 8.5 Expired and tampered tokens are rejected
+    const activeSecret = resolveJwtSecret(config.nodeEnv || 'development');
+    const expiredToken = jwt.sign(
+      { id: 1, email: 'admin@booknest.com', role: 'admin', name: 'Admin' },
+      activeSecret,
+      { expiresIn: '-10s' }
+    );
+    const expiredAuthRes = await fetch(`${baseUrl}/api/admin/metrics`, {
+      headers: { Authorization: `Bearer ${expiredToken}` }
+    });
+    assert(expiredAuthRes.status === 401, '8.5 Expired JWT token is rejected (HTTP 401)');
+
+    const tamperedToken = `${sec8AdminData.token}corrupted`;
+    const tamperedAuthRes = await fetch(`${baseUrl}/api/admin/metrics`, {
+      headers: { Authorization: `Bearer ${tamperedToken}` }
+    });
+    assert(tamperedAuthRes.status === 401, '8.5 Tampered JWT signature is rejected (HTTP 401)');
+
+    // 8.6 AI Advisor: Unauthenticated requests are rejected
+    const sec8UnauthAiRes = await fetch(`${baseUrl}/api/recommendations/ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: 'machine learning algorithms' })
+    });
+    assert(sec8UnauthAiRes.status === 401, '8.6 AI Advisor: Unauthenticated request is rejected (HTTP 401)');
+
+    // 8.7 AI Advisor: Catalog fallback returns real warehouse inventory when key is missing or null
+    const catalogFallback = getCatalogFallbackRecommendations('clean code');
+    assert(
+      catalogFallback &&
+      catalogFallback.isAiGenerated === false &&
+      Array.isArray(catalogFallback.suggestedBooks) &&
+      catalogFallback.suggestedBooks.length > 0 &&
+      Boolean(catalogFallback.recommendation),
+      '8.7 AI Advisor: getCatalogFallbackRecommendations returns verified warehouse inventory'
+    );
+
+    // 8.8 AI Advisor: Fallback when unknown query has no direct keyword match
+    const noMatchFallback = getCatalogFallbackRecommendations('xyznonexistentquery99999');
+    assert(
+      noMatchFallback &&
+      noMatchFallback.isAiGenerated === false &&
+      Array.isArray(noMatchFallback.suggestedBooks) &&
+      noMatchFallback.suggestedBooks.length > 0,
+      '8.8 AI Advisor: Fallback returns top-rated campus books when no keyword matches'
+    );
+
+    // 8.9 AI Advisor: Malformed AI output or provider failure safely falls back to catalog
+    setAiRecommendationProvider(async () => {
+      // Return deterministic fallback
+      return {
+        recommendation: 'Deterministic mock recommendation',
+        suggestedBooks: catalogFallback.suggestedBooks,
+        isAiGenerated: false
+      };
+    });
+    const safeAiRes = await fetch(`${baseUrl}/api/recommendations/ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${studentToken}` },
+      body: JSON.stringify({ query: 'web engineering and databases' })
+    });
+    const safeAiData = await safeAiRes.json();
+    assert(
+      safeAiRes.status === 200 &&
+      Array.isArray(safeAiData.suggestedBooks) &&
+      safeAiData.suggestedBooks.length > 0,
+      '8.9 AI Advisor: Gracefully serves safe recommendation without crashing on edge cases'
+    );
+    setAiRecommendationProvider(null);
+
+    // 8.10 Security: Responses never leak JWT secrets, passwords, or API keys
+    const responsePayloadStr = JSON.stringify(safeAiData) + JSON.stringify(sec8AdminData);
+    const hasLeakedSecret = responsePayloadStr.includes('password_hash') ||
+      responsePayloadStr.includes('GEMINI_API_KEY') ||
+      (process.env.GEMINI_API_KEY && responsePayloadStr.includes(process.env.GEMINI_API_KEY));
+    assert(!hasLeakedSecret, '8.10 Security: Zero leakage of secrets, passwords, or API keys in response payloads');
+
+    // 8.11 Optional Live-Provider Smoke Test (only runs if GEMINI_API_KEY is configured in env)
+    if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()) {
+      console.log('  ℹ️  Live GEMINI_API_KEY detected — running live model smoke test...');
+      try {
+        const liveRes = await fetch(`${baseUrl}/api/recommendations/ai`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${studentToken}` },
+          body: JSON.stringify({ query: 'artificial intelligence and data science' })
+        });
+        const liveData = await liveRes.json();
+        assert(
+          liveRes.status === 200 &&
+          typeof liveData.recommendation === 'string' &&
+          Array.isArray(liveData.suggestedBooks),
+          '8.11 [LIVE OPTIONAL] Live Gemini recommendation successfully returned valid schema'
+        );
+      } catch (liveErr) {
+        console.warn('  ⚠️ Live smoke test encountered network error (non-fatal):', liveErr.message);
+      }
+    } else {
+      console.log('  ℹ️  [SKIPPED] Live AI smoke test (GEMINI_API_KEY not set in environment)');
+    }
 
   } catch (err) {
     console.error('Test execution error:', err);

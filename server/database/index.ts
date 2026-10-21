@@ -214,9 +214,49 @@ export function initDatabase() {
   // Ensure all 19 predefined categories exist
   ensurePredefinedCategories();
 
+  // Ensure demo accounts exist with valid credentials even if database already existed
+  ensureDemoAccounts();
+
   // Reconcile canonical test fixtures and seed data consistently
   reconcileCanonicalData();
 }
+
+export function ensureDemoAccounts() {
+  try {
+    // 1. Production Safety: Never auto-seed or modify demo accounts in production unless explicitly enabled
+    const isProd = (config.nodeEnv || '').toLowerCase() === 'production';
+    if (isProd && process.env.ALLOW_DEMO_ACCOUNTS !== 'true') {
+      return;
+    }
+
+    const adminEmail = 'admin@booknest.com';
+    const studentEmail = 'user@booknest.com';
+    const adminPasswordHash = bcrypt.hashSync('Admin@123', 10);
+    const studentPasswordHash = bcrypt.hashSync('User@123', 10);
+
+    // 2. Ensure Demo Admin exists ONLY if it doesn't already exist.
+    // Existing accounts and passwords are strictly preserved to prevent accidental password resets or role elevations.
+    const admin = db.prepare('SELECT id, role, password_hash FROM users WHERE email = ?').get(adminEmail) as any;
+    if (!admin) {
+      db.prepare(`
+        INSERT INTO users (name, email, password_hash, role, phone, joined_date)
+        VALUES (?, ?, ?, 'admin', ?, 'August 2024')
+      `).run('BookNest Administrator', adminEmail, adminPasswordHash, '+91 98765 43210');
+    }
+
+    // 3. Ensure Demo Student exists ONLY if it doesn't already exist.
+    const student = db.prepare('SELECT id, role, password_hash FROM users WHERE email = ?').get(studentEmail) as any;
+    if (!student) {
+      db.prepare(`
+        INSERT INTO users (name, email, password_hash, role, phone, joined_date)
+        VALUES (?, ?, ?, 'user', ?, 'August 2024')
+      `).run('Aditya Chauhan', studentEmail, studentPasswordHash, '+91 91234 56789');
+    }
+  } catch (err) {
+    console.warn('[Database Notice] Error ensuring demo accounts:', err);
+  }
+}
+
 
 function reconcileCanonicalData() {
   try {

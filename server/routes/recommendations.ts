@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db } from '../db/database.js';
-import { ai } from '../services/gemini.js';
+import { ai, isGeminiConfigured, getGeminiClient } from '../services/gemini.js';
 import { requireAuth } from '../middleware/auth.js';
 import { aiLimiter } from '../middleware/rateLimiter.js';
 
@@ -16,6 +16,103 @@ let customAiRecommendationProvider: AiRecommendationProvider | null = null;
 
 export function setAiRecommendationProvider(provider: AiRecommendationProvider | null) {
   customAiRecommendationProvider = provider;
+}
+
+// Safe diagnostic logger: logs stage, status, category, hasApiKey without leaking secrets
+function logAiDiagnostic(stage: string, details: {
+  status?: number;
+  errorCategory?: string;
+  hasApiKey?: boolean;
+  model?: string;
+  durationMs?: number;
+  message?: string;
+} = {}) {
+  const parts = [
+    `[AI Advisor] Stage: ${stage}`,
+    details.status !== undefined ? `Status: ${details.status}` : null,
+    details.errorCategory ? `ErrorCategory: ${details.errorCategory}` : null,
+    details.hasApiKey !== undefined ? `ApiKeyConfigured: ${details.hasApiKey}` : null,
+    details.model ? `Model: ${details.model}` : null,
+    details.durationMs !== undefined ? `Duration: ${details.durationMs}ms` : null,
+    details.message ? `Note: ${details.message}` : null,
+  ].filter(Boolean);
+
+  console.log(parts.join(' | '));
+}
+
+// Deterministic catalog fallback based on real campus inventory
+export function getCatalogFallbackRecommendations(query: string, currentBookTitle?: string) {
+  const clean = (query || '').trim().toLowerCase();
+  const words = clean.split(/[^a-zA-Z0-9]+/).filter(w => w.length >= 3);
+
+  let excludeClause = '';
+  const params: any[] = [];
+  if (currentBookTitle && currentBookTitle.trim()) {
+    excludeClause = 'AND LOWER(b.title) != LOWER(?)';
+    params.push(currentBookTitle.trim());
+  }
+
+  // 1. Try keyword search across title, category, description, and author
+  let matchingBooks: any[] = [];
+  if (words.length > 0) {
+    const likeClauses = words.map(() => '(LOWER(b.title) LIKE ? OR LOWER(c.name) LIKE ? OR LOWER(b.description) LIKE ? OR LOWER(a.name) LIKE ?)').join(' OR ');
+    const searchParams: any[] = [];
+    for (const w of words) {
+      const term = `%${w}%`;
+      searchParams.push(term, term, term, term);
+    }
+
+    matchingBooks = db.prepare(`
+      SELECT
+        b.id, b.title, a.name as author, c.name as category, c.slug as categorySlug,
+        b.price, b.discount, b.rating, b.stock, b.cover_image as coverImage,
+        b.isbn, b.publisher, b.pages, b.publication_year as year, b.language, b.description
+      FROM books b
+      JOIN authors a ON b.author_id = a.id
+      JOIN categories c ON b.category_id = c.id
+      WHERE (b.is_archived IS NULL OR b.is_archived = 0)
+        ${excludeClause}
+        AND (${likeClauses})
+      ORDER BY b.rating DESC, b.stock DESC
+      LIMIT 3
+    `).all(...params, ...searchParams) as any[];
+  }
+
+  // 2. If no keyword matches, select highest rated catalog titles
+  if (matchingBooks.length === 0) {
+    matchingBooks = db.prepare(`
+      SELECT
+        b.id, b.title, a.name as author, c.name as category, c.slug as categorySlug,
+        b.price, b.discount, b.rating, b.stock, b.cover_image as coverImage,
+        b.isbn, b.publisher, b.pages, b.publication_year as year, b.language, b.description
+      FROM books b
+      JOIN authors a ON b.author_id = a.id
+      JOIN categories c ON b.category_id = c.id
+      WHERE (b.is_archived IS NULL OR b.is_archived = 0)
+        ${excludeClause}
+      ORDER BY b.rating DESC, b.stock DESC
+      LIMIT 3
+    `).all(...params) as any[];
+  }
+
+  if (matchingBooks.length === 0) {
+    return {
+      recommendation: 'No matching books are currently available in the campus warehouse catalog.',
+      suggestedBooks: [],
+      isAiGenerated: false
+    };
+  }
+
+  const titles = matchingBooks.map(b => `"${b.title}"`).join(', ');
+  const recommendation = words.length > 0
+    ? `Curated campus collection recommendations for "${query}": ${titles}. Selected from verified university textbooks and faculty holdings.`
+    : `Top-rated university reading recommendations based on campus scholarly reviews: ${titles}.`;
+
+  return {
+    recommendation,
+    suggestedBooks: matchingBooks,
+    isAiGenerated: false
+  };
 }
 
 // Frequently Bought Together Bundle for a book
@@ -136,8 +233,10 @@ router.post('/ai', requireAuth, aiLimiter, async (req, res) => {
   if (customAiRecommendationProvider) {
     try {
       const mockResult = await customAiRecommendationProvider({ query: cleanQuery, currentBookTitle: cleanBookTitle });
+      logAiDiagnostic('mock_provider_success', { status: 200, hasApiKey: false });
       return res.json(mockResult);
     } catch (mockErr: any) {
+      logAiDiagnostic('mock_provider_error', { status: 502, errorCategory: 'upstream_timeout', hasApiKey: false });
       return res.status(502).json({
         error: 'External AI service error or timeout occurred.',
         isAiGenerated: false
@@ -145,22 +244,14 @@ router.post('/ai', requireAuth, aiLimiter, async (req, res) => {
     }
   }
 
-  if (!ai) {
-    // Return curated campus picks if Gemini is not configured
-    const topBooks = db.prepare(`
-      SELECT b.id, b.title, a.name as author, c.name as category, b.price, b.cover_image as coverImage, b.rating
-      FROM books b
-      JOIN authors a ON b.author_id = a.id
-      JOIN categories c ON b.category_id = c.id
-      WHERE (b.is_archived IS NULL OR b.is_archived = 0)
-      ORDER BY b.rating DESC LIMIT 3
-    `).all();
+  const hasKey = isGeminiConfigured();
+  const geminiClient = getGeminiClient() || ai;
+  logAiDiagnostic('request_received', { status: 200, hasApiKey: hasKey });
 
-    return res.json({
-      recommendation: 'Here are our top rated campus literary and engineering recommendations based on student reviews.',
-      suggestedBooks: topBooks,
-      isAiGenerated: false
-    });
+  if (!geminiClient || !hasKey) {
+    logAiDiagnostic('fallback_no_key', { status: 200, hasApiKey: false, message: 'Gemini API key unconfigured, using deterministic catalog fallback' });
+    const fallback = getCatalogFallbackRecommendations(cleanQuery, cleanBookTitle);
+    return res.json(fallback);
   }
 
   try {
@@ -175,50 +266,103 @@ Available Books in campus warehouse catalog: [${catalogTitles}].
 
 Provide a warm, intelligent 2-3 sentence recommendation explaining which available book IDs best fit their request. Return STRICT JSON with keys: "explanation" (string), "recommendedBookIds" (array of numbers). Do not include markdown code block syntax.`;
 
-    const candidateModels = ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+    const candidateModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.8-flash'];
     let response: any = null;
+    let usedModel: string | null = null;
+    const startTime = Date.now();
 
-    // Enforce safe 8-second timeout for AI completion
-    const aiTimeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('AI generation timed out')), 8000)
-    );
+    for (const model of candidateModels) {
+      try {
+        logAiDiagnostic('contacting_model', { model, hasApiKey: true });
+        const modelPromise = geminiClient.models.generateContent({
+          model,
+          contents: prompt
+        });
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`Model ${model} timed out after 5s`)), 5000)
+        );
 
-    const generatePromise = (async () => {
-      for (const model of candidateModels) {
-        try {
-          const res = await ai.models.generateContent({
-            model,
-            contents: prompt
-          });
-          if (res && res.text) return res;
-        } catch (err) {
-          console.warn(`Recommendations AI model ${model} failed, trying fallback...`);
+        const res = await Promise.race([modelPromise, timeoutPromise]) as any;
+        if (res && res.text) {
+          response = res;
+          usedModel = model;
+          break;
         }
+      } catch (modelErr: any) {
+        logAiDiagnostic('model_attempt_failed', {
+          model,
+          errorCategory: 'model_unavailable_or_timeout',
+          hasApiKey: true,
+          message: modelErr?.message ? String(modelErr.message).slice(0, 60) : 'Model attempt error'
+        });
       }
-      return null;
-    })();
-
-    response = await Promise.race([generatePromise, aiTimeoutPromise]);
-
-    if (!response || !response.text) {
-      throw new Error('AI recommendation generation failed across candidate models');
     }
 
+    if (!response || !response.text) {
+      logAiDiagnostic('all_models_exhausted', {
+        status: 200,
+        errorCategory: 'upstream_exhausted',
+        hasApiKey: true,
+        durationMs: Date.now() - startTime,
+        message: 'All AI models exhausted or unavailable, providing deterministic catalog fallback'
+      });
+      const fallback = getCatalogFallbackRecommendations(cleanQuery, cleanBookTitle);
+      return res.json(fallback);
+    }
+
+    const durationMs = Date.now() - startTime;
+    logAiDiagnostic('provider_success', {
+      status: 200,
+      model: usedModel || 'unknown',
+      durationMs,
+      hasApiKey: true
+    });
+
     const text = response.text || '{}';
-    const cleanJson = text.replace(/```json/g, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(cleanJson);
+    const cleanJson = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+    let parsed: any = null;
+    try {
+      const match = cleanJson.match(/\{[\s\S]*\}/);
+      if (match) {
+        parsed = JSON.parse(match[0]);
+      } else {
+        parsed = JSON.parse(cleanJson);
+      }
+    } catch {
+      logAiDiagnostic('json_parse_fallback', {
+        status: 200,
+        errorCategory: 'malformed_provider_output',
+        hasApiKey: true,
+        message: 'AI output was not valid JSON, providing deterministic catalog fallback'
+      });
+      const fallback = getCatalogFallbackRecommendations(cleanQuery, cleanBookTitle);
+      return res.json(fallback);
+    }
 
     const ids = Array.isArray(parsed.recommendedBookIds) ? parsed.recommendedBookIds : [];
     let books: any[] = [];
     if (ids.length > 0) {
       const placeholders = ids.map(() => '?').join(',');
       books = db.prepare(`
-        SELECT b.id, b.title, a.name as author, c.name as category, b.price, b.discount, b.cover_image as coverImage, b.rating
+        SELECT
+          b.id, b.title, a.name as author, c.name as category, c.slug as categorySlug,
+          b.price, b.discount, b.rating, b.stock, b.cover_image as coverImage,
+          b.isbn, b.publisher, b.pages, b.publication_year as year, b.language, b.description
         FROM books b
         JOIN authors a ON b.author_id = a.id
         JOIN categories c ON b.category_id = c.id
         WHERE b.id IN (${placeholders}) AND (b.is_archived IS NULL OR b.is_archived = 0)
       `).all(...ids);
+    }
+
+    if (books.length === 0) {
+      // If AI recommended book IDs that are not in catalog, fallback to keyword catalog match
+      const fallback = getCatalogFallbackRecommendations(cleanQuery, cleanBookTitle);
+      return res.json({
+        recommendation: parsed.explanation || fallback.recommendation,
+        suggestedBooks: fallback.suggestedBooks,
+        isAiGenerated: true
+      });
     }
 
     res.json({
@@ -227,12 +371,15 @@ Provide a warm, intelligent 2-3 sentence recommendation explaining which availab
       isAiGenerated: true
     });
   } catch (err: any) {
-    // Never leak stack traces or provider internal error structures
-    console.error('AI Recommendation processing failure:', err.message || err);
-    res.status(502).json({
-      error: 'AI recommendation service is temporarily unavailable. Please try again shortly.',
-      isAiGenerated: false
+    // Safe fallback on unexpected failure: never crash or leave student empty-handed
+    logAiDiagnostic('unexpected_failure_fallback', {
+      status: 200,
+      errorCategory: 'upstream_exception',
+      hasApiKey: hasKey,
+      message: 'Unexpected provider exception, providing deterministic catalog fallback'
     });
+    const fallback = getCatalogFallbackRecommendations(cleanQuery, cleanBookTitle);
+    res.json(fallback);
   }
 });
 

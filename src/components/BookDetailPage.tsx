@@ -50,6 +50,7 @@ export const BookDetailPage: React.FC<BookDetailPageProps> = ({
   const [newComment, setNewComment] = useState('');
   const [submittingReview, setSubmittingReview] = useState(false);
   const [reviewMsg, setReviewMsg] = useState<string | null>(null);
+  const [imageError, setImageError] = useState(false);
 
   // Prevent duplicate analytics/fetch increments for the same bookId in StrictMode
   const loadedBookIdRef = useRef<string | number | null>(null);
@@ -78,6 +79,7 @@ export const BookDetailPage: React.FC<BookDetailPageProps> = ({
     setError(null);
     setQty(1);
     setReviewMsg(null);
+    setImageError(false);
 
     // Hydrate directly from backend endpoint
     api.getBookById(cleanId)
@@ -272,14 +274,36 @@ export const BookDetailPage: React.FC<BookDetailPageProps> = ({
 
             {/* Book Cover Frame */}
             <div className="relative z-10 w-full max-w-[280px] aspect-[2/3] rounded-r-2xl rounded-l-md overflow-hidden book-shadow-3d book-spine border border-slate-900/10 transition-transform duration-300">
-              <img
-                src={book.coverImage}
-                alt={book.title}
-                data-testid="book-detail-cover"
-                className={`w-full h-full object-cover transition-all duration-300 ${
-                  selectedAngle === 'spine' ? 'scale-110 -rotate-3' : selectedAngle === 'jacket' ? 'scale-105' : 'scale-100'
-                }`}
-              />
+              {imageError || !book.coverImage ? (
+                <div className="w-full h-full bg-gradient-to-br from-amber-700 via-amber-800 to-slate-900 p-6 flex flex-col justify-between text-white select-none">
+                  <div>
+                    <span className="text-xs uppercase font-bold text-amber-300 tracking-wider block">
+                      {book.category}
+                    </span>
+                    <h2 className="font-serif font-black text-xl leading-snug mt-3 line-clamp-4">
+                      {book.title}
+                    </h2>
+                  </div>
+                  <div>
+                    <p className="text-sm text-amber-200/90 font-medium line-clamp-2">
+                      {book.author}
+                    </p>
+                    <span className="text-xs text-amber-300/60 font-mono block mt-2">
+                      ISBN {book.isbn ? book.isbn.slice(-4) : 'N/A'}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <img
+                  src={book.coverImage}
+                  alt={book.title}
+                  data-testid="book-detail-cover"
+                  onError={() => setImageError(true)}
+                  className={`w-full h-full object-cover transition-all duration-300 ${
+                    selectedAngle === 'spine' ? 'scale-110 -rotate-3' : selectedAngle === 'jacket' ? 'scale-105' : 'scale-100'
+                  }`}
+                />
+              )}
             </div>
 
             {/* Gallery Angle Pills */}
