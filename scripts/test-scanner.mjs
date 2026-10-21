@@ -1,14 +1,101 @@
 import { chromium } from '@playwright/test';
 import fs from 'fs';
+import path from 'path';
+import fetch from 'node-fetch';
 
+// Set isolated test database environment BEFORE importing server/database modules
+const testDbPath = process.env.DB_PATH || path.resolve(process.cwd(), 'data', 'booknest.test.db');
+process.env.DB_PATH = testDbPath;
+process.env.NODE_ENV = 'test';
+
+// Dynamically import server, database, and scanner mock provider
+const { app } = await import('../server/server.js');
+const { closeDatabase } = await import('../server/database/index.js');
+const { setExternalLookupProvider } = await import('../server/routes/scanner.js');
+
+const TEST_PORT = 5057;
 const BASE_URL = 'http://localhost:3000';
-const API_URL = 'http://localhost:5000/api';
+const API_URL = `http://localhost:${TEST_PORT}/api`;
+let server;
+
+async function attachTestApiRouting(context) {
+  await context.route('**/api/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const targetUrl = `http://127.0.0.1:${TEST_PORT}${url.pathname}${url.search}`;
+    try {
+      const headers = { ...request.headers() };
+      delete headers['host'];
+      const response = await fetch(targetUrl, {
+        method: request.method(),
+        headers,
+        body: request.postDataBuffer() || undefined,
+      });
+      const body = await response.buffer();
+      const responseHeaders = {};
+      for (const [key, value] of response.headers.entries()) {
+        responseHeaders[key] = value;
+      }
+      await route.fulfill({
+        status: response.status,
+        headers: responseHeaders,
+        body,
+      });
+    } catch (err) {
+      console.error(`Route forwarding failed for ${targetUrl}:`, err);
+      await route.abort();
+    }
+  });
+}
 
 async function runScannerTestSuite() {
   console.log('🧪 ========================================================');
   console.log('🧪 BookNest Deterministic Scanner Verification Test Suite');
-  console.log('🧪 Testing All 15 Required Scanner Pipeline Scenarios');
+  console.log(`🧪 Using Isolated Test Database: ${process.env.DB_PATH}`);
+  console.log('🧪 Testing Scanner Pipeline Scenarios Deterministically');
   console.log('🧪 ========================================================\n');
+
+  // Configure deterministic external OpenLibrary provider
+  setExternalLookupProvider({
+    lookupByIsbn: async (cleanIsbn) => {
+      // 1. Simulated network failure / timeout scenario
+      if (cleanIsbn === '9780000000009') {
+        throw new Error('Simulated OpenLibrary external timeout (4000ms)');
+      }
+      // 2. Controlled external catalog match (Crime and Punishment)
+      if (cleanIsbn === '9780140449136') {
+        return {
+          id: -1,
+          title: 'Crime and Punishment',
+          author: 'Fyodor Dostoyevsky',
+          isbn: '9780140449136',
+          category: 'Classic Literature',
+          categorySlug: 'classics',
+          publisher: 'Penguin Classics',
+          pages: 671,
+          year: 2003,
+          language: 'English',
+          coverImage: 'https://covers.openlibrary.org/b/id/8225261-L.jpg',
+          price: 0,
+          discount: 0,
+          stock: 0,
+          rating: 0,
+          description: 'External publication found via OpenLibrary archive for Crime and Punishment. Currently not stocked in campus warehouse.',
+          isLocalCatalog: false
+        };
+      }
+      // 3. Unknown or uncataloged ISBN returns null (honest not found)
+      return null;
+    },
+    searchByTitleAuthor: async () => null
+  });
+
+  await new Promise((resolve) => {
+    server = app.listen(TEST_PORT, () => {
+      console.log(`Scanner Test API server running on port ${TEST_PORT}`);
+      resolve();
+    });
+  });
 
   let passed = 0;
   let failed = 0;
@@ -175,19 +262,53 @@ async function runScannerTestSuite() {
       body: JSON.stringify({ isbn: '9780140449136' })
     });
     const data = await res.json();
-    if (res.ok) {
-      assert(data.matched === true, 'Matched external book via OpenLibrary archive');
-      assert(data.isLocalCatalog === false, 'Properly marked as NOT in local catalog (isLocalCatalog: false)');
-      assert(data.book?.stock === 0, `External book stock is honest 0 (Got: ${data.book?.stock})`);
-      assert(data.book?.price === 0, `External book price is not fabricated (Got: ${data.book?.price})`);
-      assert(typeof data.book?.title === 'string' && data.book.title.length > 0, `Retrieved real title: "${data.book?.title}"`);
-    } else {
-      // If external network is unreachable or timed out
-      console.log('  ⚠️ Note: OpenLibrary external query timed out or unreachable in test environment.');
-      assert(res.status === 404, 'Gracefully returned 404 when external lookup times out');
-    }
+    assert(res.ok && data.matched === true, 'Matched external book via deterministic OpenLibrary mock');
+    assert(data.isLocalCatalog === false, 'Properly marked as NOT in local catalog (isLocalCatalog: false)');
+    assert(data.book?.stock === 0, `External book stock is honest 0 (Got: ${data.book?.stock})`);
+    assert(data.book?.price === 0, `External book price is not fabricated (Got: ${data.book?.price})`);
+    assert(data.book?.title === 'Crime and Punishment', `Retrieved genuine title: "${data.book?.title}"`);
   } catch (err) {
     assert(false, `Test 10 threw error: ${err.message}`);
+  }
+
+  console.log('\n--- Test 10b: OpenLibrary External Lookup Timeout Simulation (9780000000009) ---');
+  try {
+    const res = await fetch(`${API_URL}/scanner/isbn`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isbn: '9780000000009' })
+    });
+    const data = await res.json();
+    assert(res.status === 404, `Gracefully returned 404 when external lookup times out (Got: ${res.status})`);
+    assert(data.matched === false, 'matched is false on lookup timeout');
+    assert(data.matchType === 'NO_MATCH', 'matchType is NO_MATCH');
+  } catch (err) {
+    assert(false, `Test 10b threw error: ${err.message}`);
+  }
+
+  console.log('\n--- Test 10c: Invalid ISBN Validation (Checksum / Malformed) ---');
+  try {
+    // Too short / malformed ISBN
+    const shortRes = await fetch(`${API_URL}/scanner/isbn`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isbn: '12345' })
+    });
+    const shortData = await shortRes.json();
+    assert(shortRes.status === 400, `Rejected malformed short ISBN with 400 (Got: ${shortRes.status})`);
+    assert(typeof shortData.error === 'string', 'Error message returned for malformed ISBN');
+
+    // Invalid checksum ISBN-13
+    const invalidChecksumRes = await fetch(`${API_URL}/scanner/isbn`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isbn: '9780000000000' })
+    });
+    const invalidChecksumData = await invalidChecksumRes.json();
+    assert(invalidChecksumRes.status === 404, `Invalid checksum ISBN returned 404 (Got: ${invalidChecksumRes.status})`);
+    assert(invalidChecksumData.matched === false, 'matched flag is false for invalid checksum ISBN');
+  } catch (err) {
+    assert(false, `Test 10c threw error: ${err.message}`);
   }
 
   console.log('\n--- Test 11: Unsupported Image Format (MIME: image/gif) ---');
@@ -259,6 +380,7 @@ async function runScannerTestSuite() {
   console.log('\n--- Test 14: Browser BarcodeDetector Unavailable Fallback ---');
   const browser = await chromium.launch({ headless: true });
   const desktopContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await attachTestApiRouting(desktopContext);
   const page = await desktopContext.newPage();
 
   const screenshotsDir = 'docs/audit-screenshots';
@@ -324,6 +446,7 @@ async function runScannerTestSuite() {
     isMobile: true,
     hasTouch: true
   });
+  await attachTestApiRouting(mobileContext);
   const mobilePage = await mobileContext.newPage();
 
   try {
@@ -364,8 +487,17 @@ async function runScannerTestSuite() {
   } catch (err) {
     assert(false, `Test 16 threw error: ${err.message}`);
   } finally {
-    await mobileContext.close();
-    await browser.close();
+    if (mobileContext) await mobileContext.close();
+    if (browser) await browser.close();
+    if (server) {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    if (typeof setExternalLookupProvider === 'function') {
+      setExternalLookupProvider();
+    }
+    if (typeof closeDatabase === 'function') {
+      closeDatabase();
+    }
   }
 
   console.log('\n========================================================');

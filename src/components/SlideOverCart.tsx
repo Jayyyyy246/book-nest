@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Book, CartSummaryData } from '../types';
 import { api } from '../api';
+import { useModalA11y } from '../hooks/useModalA11y';
 
 interface SlideOverCartProps {
   isOpen: boolean;
@@ -38,14 +39,11 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
   const [couponInput, setCouponInput] = useState('');
   const [couponError, setCouponError] = useState('');
 
-  // Close on Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  const { modalRef } = useModalA11y({
+    isOpen,
+    onClose,
+    autoFocusSelector: '[data-testid="close-cart-btn"]',
+  });
 
   if (!isOpen) return null;
 
@@ -79,6 +77,7 @@ export const SlideOverCart: React.FC<SlideOverCartProps> = ({
 
   return (
     <div 
+      ref={modalRef}
       role="dialog"
       aria-modal="true"
       aria-labelledby="cart-drawer-heading"

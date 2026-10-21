@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Book } from '../types';
 import { api } from '../api';
+import { useModalA11y } from '../hooks/useModalA11y';
 
 interface QuickViewModalProps {
   book: Book | null;
@@ -12,6 +13,7 @@ interface QuickViewModalProps {
   onOpenAuth?: () => void;
   allBooks?: Book[];
   onSelectBook?: (book: Book) => void;
+  onViewFullDetails?: (book: Book) => void;
 }
 
 export const QuickViewModal: React.FC<QuickViewModalProps> = ({
@@ -24,6 +26,7 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({
   onOpenAuth,
   allBooks = [],
   onSelectBook,
+  onViewFullDetails,
 }) => {
   const [qty, setQty] = useState(1);
   const [isAdded, setIsAdded] = useState(false);
@@ -43,14 +46,11 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({
   const [bundleOffer, setBundleOffer] = useState<any | null>(null);
   const [bundleAdded, setBundleAdded] = useState(false);
 
-  // Keyboard accessibility: Escape to close
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  // Modal accessibility: focus trapping, body scroll lock, Escape key, and focus restoration
+  const { modalRef } = useModalA11y({
+    isOpen: !!book,
+    onClose,
+  });
 
   useEffect(() => {
     if (book) {
@@ -125,10 +125,12 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({
 
   return (
     <div 
+      ref={modalRef}
       role="dialog"
       aria-modal="true"
       aria-labelledby="modal-book-title"
-      className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150"
+      data-testid="quick-view-modal"
+      className="fixed inset-0 z-[60] overflow-y-auto bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150"
     >
       {/* Modal Card */}
       <div className="relative w-full max-w-3xl bg-white rounded-3xl border border-slate-200/90 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 max-h-[90vh] flex flex-col">
@@ -351,6 +353,21 @@ export const QuickViewModal: React.FC<QuickViewModalProps> = ({
                     </button>
 
                   </div>
+
+                  {onViewFullDetails && (
+                    <button
+                      type="button"
+                      data-testid="quickview-view-full-details-btn"
+                      onClick={() => {
+                        onClose();
+                        onViewFullDetails(book);
+                      }}
+                      className="w-full mt-3 py-2 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-950 font-bold text-xs border border-amber-200/80 transition-colors flex items-center justify-center gap-1.5 shadow-2xs"
+                    >
+                      <span>View Full Book Details &amp; Shareable Link</span>
+                      <i className="fa-solid fa-arrow-up-right-from-square text-[10px]"></i>
+                    </button>
+                  )}
 
                 </div>
 

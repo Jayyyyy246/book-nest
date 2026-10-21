@@ -3,7 +3,7 @@ import { Book, UserSession } from '../types';
 
 interface NavbarProps {
   books: Book[];
-  activeView: 'store' | 'catalog' | 'scanner' | 'admin' | 'orders' | 'wishlist';
+  activeView: 'store' | 'catalog' | 'scanner' | 'admin' | 'orders' | 'wishlist' | 'book';
   cartCount: number;
   wishlistCount: number;
   currentUser: UserSession | null;
@@ -13,6 +13,7 @@ interface NavbarProps {
   onToggleUserRole?: () => void;
   onOpenAuth: () => void;
   onLogout: () => void;
+  onOpenAiAdvisor?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -27,6 +28,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onToggleUserRole,
   onOpenAuth,
   onLogout,
+  onOpenAiAdvisor,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
@@ -335,6 +337,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 onKeyDown={(e) => {
                   if (e.key === 'Escape') setIsSearchFocused(false);
                 }}
+                aria-label="Search campus catalog by title, author, ISBN, or category"
                 placeholder="Search by title, author, ISBN, or category..."
                 className="w-full py-2.5 pl-3 pr-10 bg-transparent text-sm text-slate-900 placeholder-slate-400 focus:outline-none"
               />
@@ -345,6 +348,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     setSearchQuery('');
                     setDebouncedQuery('');
                   }}
+                  aria-label="Clear search input"
                   className="absolute right-3 p-1 text-slate-400 hover:text-slate-600"
                 >
                   <i className="fa-solid fa-xmark text-xs"></i>
@@ -358,7 +362,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
 
         {/* Desktop Navigation Links */}
-        <nav className="hidden lg:flex items-center gap-1">
+        <nav className="hidden lg:flex items-center gap-1" aria-label="Main Navigation">
           <button
             onClick={() => onNavigate('store')}
             className={`px-3 py-2 rounded-xl text-xs font-semibold transition-all ${
@@ -395,6 +399,15 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
 
           <button
+            data-testid="desktop-nav-ai-advisor-btn"
+            onClick={onOpenAiAdvisor}
+            className="px-3 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 text-slate-700 hover:text-amber-900 hover:bg-amber-100/60 border border-transparent hover:border-amber-300/60"
+          >
+            <i className="fa-solid fa-sparkles text-xs text-amber-600"></i>
+            <span>AI Advisor</span>
+          </button>
+
+          <button
             onClick={() => onNavigate('admin')}
             className={`px-3 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 ${
               activeView === 'admin'
@@ -414,6 +427,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button
             onClick={() => onNavigate('wishlist')}
             title="Wishlist"
+            aria-label={`Saved reading wishlist (${wishlistCount} ${wishlistCount === 1 ? 'book' : 'books'})`}
             className={`relative w-9 h-9 sm:w-10 sm:h-10 rounded-2xl hidden sm:flex items-center justify-center transition-all ${
               activeView === 'wishlist'
                 ? 'bg-rose-50 text-rose-600 border border-rose-200 shadow-sm'
@@ -432,6 +446,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button
             onClick={onOpenCart}
             title="Shopping Cart"
+            aria-label={`Open shopping cart (${cartCount} ${cartCount === 1 ? 'item' : 'items'})`}
             className="relative px-2.5 sm:px-3.5 py-2 sm:py-2.5 rounded-2xl bg-slate-900 hover:bg-amber-600 text-amber-100 hover:text-slate-950 font-semibold text-xs flex items-center gap-1.5 sm:gap-2 shadow-sm transition-all duration-200 active:scale-95 group shrink-0"
           >
             <i className="fa-solid fa-bag-shopping text-sm text-amber-400 group-hover:text-slate-950 transition-colors"></i>
@@ -446,13 +461,16 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               data-testid="account-menu-btn"
               onClick={() => setIsAccountOpen(!isAccountOpen)}
+              aria-label="Account profile and settings"
+              aria-expanded={isAccountOpen}
+              aria-haspopup="true"
               className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-amber-100/70 border border-amber-300/50 flex items-center justify-center text-amber-900 hover:bg-amber-200/80 transition-colors"
             >
               <i className="fa-regular fa-user text-xs sm:text-sm"></i>
             </button>
 
             {isAccountOpen && (
-              <div className="absolute right-0 mt-2 w-64 bg-white rounded-2xl border border-slate-200 shadow-2xl p-3 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
+              <div id="account-menu-dropdown" className="absolute right-0 mt-2 w-64 bg-white rounded-2xl border border-slate-200 shadow-2xl p-3 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
                 {currentUser ? (
                   <>
                     <div className="p-3 bg-amber-50/70 rounded-xl mb-2">
@@ -556,8 +574,10 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button
             data-testid="mobile-menu-toggle"
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-            aria-label="Toggle mobile menu"
-            className="lg:hidden w-10 h-10 rounded-2xl bg-white border border-slate-200 flex items-center justify-center text-slate-700 shrink-0 relative z-10"
+            aria-label={isMobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+            aria-expanded={isMobileMenuOpen}
+            aria-controls="mobile-nav-drawer"
+            className="lg:hidden w-10 h-10 rounded-2xl bg-white border border-slate-200 flex items-center justify-center text-slate-700 shrink-0 relative z-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
           >
             <i className={`fa-solid ${isMobileMenuOpen ? 'fa-xmark' : 'fa-bars'} text-sm`}></i>
           </button>
@@ -583,6 +603,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               onKeyDown={(e) => {
                 if (e.key === 'Escape') setIsSearchFocused(false);
               }}
+              aria-label="Search campus catalog by title, author, ISBN, or category"
               placeholder="Search by title, author, ISBN, or category..."
               className="w-full py-2 pl-2.5 pr-8 bg-transparent text-xs text-slate-900 placeholder-slate-400 focus:outline-none"
             />
@@ -593,6 +614,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   setSearchQuery('');
                   setDebouncedQuery('');
                 }}
+                aria-label="Clear search input"
                 className="absolute right-2.5 p-1 text-slate-400 hover:text-slate-600"
               >
                 <i className="fa-solid fa-xmark text-xs"></i>
@@ -605,7 +627,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Mobile Menu Drawer */}
       {isMobileMenuOpen && (
-        <div className="lg:hidden border-t border-slate-200/80 bg-white/95 px-4 pt-3 pb-6 space-y-2 animate-in slide-in-from-top-2 duration-200">
+        <div id="mobile-nav-drawer" className="lg:hidden border-t border-slate-200/80 bg-white/95 px-4 pt-3 pb-6 space-y-2 animate-in slide-in-from-top-2 duration-200">
           <button
             onClick={() => {
               onNavigate('store');
@@ -636,6 +658,18 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <i className="fa-solid fa-camera text-amber-600"></i>
             <span>Scan Book Cover</span>
+          </button>
+
+          <button
+            data-testid="mobile-nav-ai-advisor-btn"
+            onClick={() => {
+              onOpenAiAdvisor?.();
+              setIsMobileMenuOpen(false);
+            }}
+            className="w-full text-left px-4 py-2.5 rounded-xl text-sm font-semibold text-amber-900 bg-amber-50/80 hover:bg-amber-100 flex items-center gap-2"
+          >
+            <i className="fa-solid fa-sparkles text-amber-600"></i>
+            <span>AI Reading Advisor</span>
           </button>
 
           <button

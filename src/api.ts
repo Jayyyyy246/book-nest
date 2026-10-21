@@ -72,10 +72,10 @@ export const api = {
 
   getMe: () => request<{ user: UserSession }>('/api/auth/me'),
 
-  loginWithGoogle: (data?: { credential?: string; email?: string; name?: string; googleId?: string }) =>
+  loginWithGoogle: (data: { credential: string }) =>
     request<{ user: UserSession; token: string }>('/api/auth/google', {
       method: 'POST',
-      body: JSON.stringify(data || {}),
+      body: JSON.stringify(data),
     }),
 
   getDemoUsers: () => request<any>('/api/auth/demo-users'),
@@ -100,6 +100,9 @@ export const api = {
   },
 
   getBookDetail: (idOrIsbn: string | number) =>
+    request<{ book: Book; reviews: any[] }>(`/api/books/${idOrIsbn}`),
+
+  getBookById: (idOrIsbn: string | number) =>
     request<{ book: Book; reviews: any[] }>(`/api/books/${idOrIsbn}`),
 
   searchBooks: (q: string) =>
@@ -167,6 +170,17 @@ export const api = {
   getOrders: () => request<{ orders: any[] }>('/api/orders'),
 
   getOrderById: (id: number | string) => request<{ order: any }>(`/api/orders/${id}`),
+
+  cancelOrder: (id: number | string) =>
+    request<{
+      success: boolean;
+      message: string;
+      orderId: number;
+      orderNumber?: string;
+      status: string;
+    }>(`/api/orders/${id}/cancel`, {
+      method: 'POST',
+    }),
 
   placeOrder: (orderPayload: {
     address: {

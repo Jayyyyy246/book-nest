@@ -1,7 +1,8 @@
 import express from 'express';
-import cors from 'cors';
 import { config } from './config/index.js';
 import { initDatabase } from './database/index.js';
+import { corsMiddleware } from './middleware/cors.js';
+import { securityHeaders } from './middleware/securityHeaders.js';
 
 import authRoutes from './routes/auth.js';
 import booksRoutes from './routes/books.js';
@@ -20,9 +21,14 @@ initDatabase();
 
 export const app = express();
 
-app.use(cors());
-app.use(express.json({ limit: config.uploadLimit }));
-app.use(express.urlencoded({ extended: true, limit: config.uploadLimit }));
+// Trust Proxy Configuration (only when supported/enabled)
+if (config.trustProxy) {
+  app.set('trust proxy', config.trustProxy);
+}
+
+// Security Headers and CORS Policy
+app.use(securityHeaders);
+app.use(corsMiddleware);
 
 // Health Check
 app.get('/api/health', (req, res) => {
@@ -35,7 +41,19 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Mount Routes
+// Dedicated 10MB parser for optical scanner routes (camera base64 images)
+app.use(
+  '/api/scanner',
+  express.json({ limit: config.uploadLimit }),
+  express.urlencoded({ extended: true, limit: config.uploadLimit }),
+  scannerRoutes
+);
+
+// Standard routes: strict 100kb payload limit to prevent resource exhaustion (SEC-04)
+app.use(express.json({ limit: '100kb' }));
+app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+
+// Mount Remaining Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/books', booksRoutes);
 app.use('/api/categories', categoriesRoutes);
@@ -45,13 +63,24 @@ app.use('/api/orders', ordersRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/reviews', reviewsRoutes);
 app.use('/api/coupons', couponsRoutes);
-app.use('/api/scanner', scannerRoutes);
 app.use('/api/recommendations', recommendationsRoutes);
 
 // Global Error Handler
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('API Error:', err);
-  res.status(500).json({ error: err.message || 'Internal server error' });
+  if (err.type === 'entity.too.large' || err.status === 413) {
+    return res.status(413).json({ error: 'Request payload exceeds maximum allowed size.' });
+  }
+
+  // Handle malformed JSON body from body-parser
+  if (err instanceof SyntaxError && (err as any).status === 400 && 'body' in err) {
+    return res.status(400).json({ error: 'Malformed JSON payload in request body.' });
+  }
+
+  console.error('API Error:', err.message || err);
+  const isProd = config.nodeEnv === 'production';
+  res.status(err.status || 500).json({
+    error: isProd ? 'Internal server error' : (err.message || 'Internal server error')
+  });
 });
 
 export function startServer() {

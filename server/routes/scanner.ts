@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { db } from '../db/database.js';
+import { config } from '../config/index.js';
 import { isGeminiConfigured, analyzeBookCover } from '../services/gemini.js';
 import {
   normalizeIsbn,
@@ -7,6 +8,7 @@ import {
   matchBookAgainstCatalog,
   MatchResult
 } from '../services/scannerMatcher.js';
+import { scannerLimiter } from '../middleware/rateLimiter.js';
 
 const router = Router();
 
@@ -19,7 +21,28 @@ function getFullCatalog(): any[] {
     FROM books b
     JOIN authors a ON b.author_id = a.id
     JOIN categories c ON b.category_id = c.id
+    WHERE (b.is_archived IS NULL OR b.is_archived = 0)
   `).all();
+}
+
+export type ExternalIsbnLookupHandler = (cleanIsbn: string) => Promise<any | null>;
+export type ExternalSearchHandler = (title: string, author?: string) => Promise<any | null>;
+export type VisionAnalysisHandler = (imageBase64: string, mimeType: string) => Promise<any | null>;
+
+let externalIsbnLookupHandler: ExternalIsbnLookupHandler = lookupOpenLibraryByIsbn;
+let externalSearchHandler: ExternalSearchHandler = searchOpenLibraryByTitleAuthor;
+let visionAnalysisHandler: VisionAnalysisHandler = analyzeBookCover;
+
+export function setExternalLookupProvider(handlers?: {
+  lookupByIsbn?: ExternalIsbnLookupHandler;
+  searchByTitleAuthor?: ExternalSearchHandler;
+}) {
+  externalIsbnLookupHandler = handlers?.lookupByIsbn || lookupOpenLibraryByIsbn;
+  externalSearchHandler = handlers?.searchByTitleAuthor || searchOpenLibraryByTitleAuthor;
+}
+
+export function setVisionAnalysisProvider(handler?: VisionAnalysisHandler) {
+  visionAnalysisHandler = handler || analyzeBookCover;
 }
 
 /**
@@ -28,7 +51,7 @@ function getFullCatalog(): any[] {
  */
 async function lookupOpenLibraryByIsbn(cleanIsbn: string): Promise<any | null> {
   try {
-    const openLibUrl = `https://openlibrary.org/api/books?bibkeys=ISBN:${cleanIsbn}&format=json&jscmd=data`;
+    const openLibUrl = `${config.openLibraryBaseUrl}?bibkeys=ISBN:${cleanIsbn}&format=json&jscmd=data`;
     const openLibRes = await fetch(openLibUrl, { signal: AbortSignal.timeout(4000) });
 
     if (openLibRes.ok) {
@@ -83,7 +106,7 @@ async function searchOpenLibraryByTitleAuthor(title: string, author?: string): P
       query.set('author', author.trim());
     }
 
-    const openLibUrl = `https://openlibrary.org/search.json?${query.toString()}`;
+    const openLibUrl = `${config.openLibrarySearchUrl}?${query.toString()}`;
     const openLibRes = await fetch(openLibUrl, { signal: AbortSignal.timeout(4000) });
 
     if (openLibRes.ok) {
@@ -127,7 +150,7 @@ async function searchOpenLibraryByTitleAuthor(title: string, author?: string): P
  * Supports ISBN-10, ISBN-13, EAN-13. Normalizes spaces & hyphens.
  * Searches local BookNest catalog first, falls back to OpenLibrary API if not in local warehouse.
  */
-router.post('/isbn', async (req, res) => {
+router.post('/isbn', scannerLimiter, async (req, res) => {
   const { isbn } = req.body;
 
   if (!isbn || typeof isbn !== 'string' || !isbn.trim()) {
@@ -164,7 +187,13 @@ router.post('/isbn', async (req, res) => {
   }
 
   // 2. Query external book metadata provider (OpenLibrary) if not found locally
-  const externalBook = await lookupOpenLibraryByIsbn(cleanIsbn);
+  let externalBook: any = null;
+  try {
+    externalBook = await externalIsbnLookupHandler(cleanIsbn);
+  } catch (extErr) {
+    // OpenLibrary lookup timed out or network error handled gracefully
+  }
+
   if (externalBook) {
     return res.json({
       success: true,
@@ -191,6 +220,111 @@ router.post('/isbn', async (req, res) => {
   });
 });
 
+export interface ImageMetadata {
+  format: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif' | 'image/bmp' | 'image/tiff' | null;
+  width?: number;
+  height?: number;
+}
+
+/**
+ * Inspects binary magic bytes and headers for JPEG, PNG, and WebP images.
+ * Extracts image dimensions to prevent decompression bombs and memory exhaustion attacks.
+ * Pure Node.js Buffer inspection with zero external dependencies.
+ */
+export function detectImageMetadata(buffer: Buffer): ImageMetadata {
+  if (buffer.length < 8) {
+    return { format: null };
+  }
+
+  // 1. JPEG: 0xFF, 0xD8, 0xFF
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+    let offset = 2;
+    let width: number | undefined;
+    let height: number | undefined;
+    while (offset < buffer.length - 8) {
+      if (buffer[offset] !== 0xFF) {
+        offset++;
+        continue;
+      }
+      const marker = buffer[offset + 1];
+      if (marker === 0xD9) break; // EOI (End of Image)
+      if (marker === 0xD8 || (marker >= 0xD0 && marker <= 0xD7)) {
+        offset += 2;
+        continue;
+      }
+      if (offset + 4 > buffer.length) break;
+      const len = buffer.readUInt16BE(offset + 2);
+      if (len < 2) break;
+
+      // Start of Frame (SOF) markers: SOF0-SOF15 excluding DHT (0xC4), JPG (0xC8), DAC (0xCC)
+      if ([0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF].includes(marker)) {
+        if (offset + 9 <= buffer.length) {
+          height = buffer.readUInt16BE(offset + 5);
+          width = buffer.readUInt16BE(offset + 7);
+          break;
+        }
+      }
+      offset += 2 + len;
+    }
+    return { format: 'image/jpeg', width, height };
+  }
+
+  // 2. PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    buffer.length >= 24 &&
+    buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47 &&
+    buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A
+  ) {
+    let width: number | undefined;
+    let height: number | undefined;
+    if (buffer.toString('ascii', 12, 16) === 'IHDR') {
+      width = buffer.readUInt32BE(16);
+      height = buffer.readUInt32BE(20);
+    }
+    return { format: 'image/png', width, height };
+  }
+
+  // 3. WebP: RIFF ... WEBP
+  if (
+    buffer.length >= 12 &&
+    buffer.toString('ascii', 0, 4) === 'RIFF' &&
+    buffer.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    let width: number | undefined;
+    let height: number | undefined;
+    const chunkType = buffer.toString('ascii', 12, 16);
+    if (chunkType === 'VP8 ' && buffer.length >= 30) {
+      if (buffer[23] === 0x9D && buffer[24] === 0x01 && buffer[25] === 0x2A) {
+        width = buffer.readUInt16LE(26) & 0x3FFF;
+        height = buffer.readUInt16LE(28) & 0x3FFF;
+      }
+    } else if (chunkType === 'VP8L' && buffer.length >= 25) {
+      if (buffer[20] === 0x2F) {
+        const b1 = buffer[21], b2 = buffer[22], b3 = buffer[23], b4 = buffer[24];
+        width = 1 + (((b2 & 0x3F) << 8) | b1);
+        height = 1 + (((b4 & 0x0F) << 10) | (b3 << 2) | ((b2 & 0xC0) >> 6));
+      }
+    } else if (chunkType === 'VP8X' && buffer.length >= 30) {
+      width = 1 + buffer.readUIntLE(24, 3);
+      height = 1 + buffer.readUIntLE(27, 3);
+    }
+    return { format: 'image/webp', width, height };
+  }
+
+  // 4. Detect other common image formats for helpful rejection errors
+  if (buffer.toString('ascii', 0, 3) === 'GIF') {
+    return { format: 'image/gif' };
+  }
+  if (buffer.toString('ascii', 0, 2) === 'BM') {
+    return { format: 'image/bmp' };
+  }
+  if (buffer.toString('ascii', 0, 4) === 'II*\0' || buffer.toString('ascii', 0, 4) === 'MM\0*') {
+    return { format: 'image/tiff' };
+  }
+
+  return { format: null };
+}
+
 /**
  * 2. Optical Cover / Camera Vision Analysis
  * Runs OCR Title, Author, Publisher extraction and genuine catalog similarity ranking.
@@ -199,7 +333,7 @@ router.post('/isbn', async (req, res) => {
  * 2. Title + Author check -> Local catalog -> OpenLibrary
  * 3. Honest rejection with clear reason (Text unclear, No book, Not configured, etc.)
  */
-router.post('/analyze', async (req, res) => {
+router.post('/analyze', scannerLimiter, async (req, res) => {
   const { imageBase64, mimeType } = req.body;
 
   if (!imageBase64 || typeof imageBase64 !== 'string') {
@@ -209,17 +343,7 @@ router.post('/analyze', async (req, res) => {
     });
   }
 
-  // Validate supported file format
-  const validMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-  const effectiveMime = mimeType ? mimeType.toLowerCase() : 'image/jpeg';
-  if (!validMimes.includes(effectiveMime)) {
-    return res.status(400).json({
-      success: false,
-      error: `Unsupported image format (${effectiveMime}). Only JPG, JPEG, PNG, and WEBP images are supported.`
-    });
-  }
-
-  // Validate maximum image payload size (10MB base64 ~ 14M characters)
+  // 1. Fast boundary check on encoded string length before expensive buffer allocation
   if (imageBase64.length > 14 * 1024 * 1024) {
     return res.status(413).json({
       success: false,
@@ -227,7 +351,122 @@ router.post('/analyze', async (req, res) => {
     });
   }
 
-  // Check Gemini configuration before proceeding (BUG 4)
+  // 2. Validate declared MIME type format if provided
+  const validMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+  let declaredMime: string | undefined;
+  if (mimeType !== undefined && mimeType !== null) {
+    if (typeof mimeType !== 'string' || !mimeType.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid mimeType format.'
+      });
+    }
+    declaredMime = mimeType.trim().toLowerCase();
+    if (!validMimes.includes(declaredMime)) {
+      return res.status(400).json({
+        success: false,
+        error: `Unsupported image format (${declaredMime}). Only JPG, JPEG, PNG, and WEBP images are supported.`
+      });
+    }
+  }
+
+  // 3. Strip data-URL scheme prefix and verify Base64 syntax
+  const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z0-9.+_-]+;base64,/, '').trim();
+  if (!cleanBase64) {
+    return res.status(400).json({
+      success: false,
+      error: 'Base64 image data is empty.'
+    });
+  }
+
+  if (!/^[A-Za-z0-9+/=\r\n]+$/.test(cleanBase64)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid Base64 character encoding in image data.'
+    });
+  }
+
+  // 4. Decode binary buffer safely and check decoded size
+  let decodedBuffer: Buffer;
+  try {
+    decodedBuffer = Buffer.from(cleanBase64, 'base64');
+  } catch {
+    return res.status(400).json({
+      success: false,
+      error: 'Failed to decode Base64 image payload.'
+    });
+  }
+
+  const MAX_DECODED_BYTES = 10 * 1024 * 1024; // 10MB decoded limit
+  if (decodedBuffer.length > MAX_DECODED_BYTES) {
+    return res.status(413).json({
+      success: false,
+      error: 'Decoded image size exceeds maximum allowed limit of 10MB.'
+    });
+  }
+
+  if (decodedBuffer.length < 12) {
+    return res.status(400).json({
+      success: false,
+      error: 'Decoded payload is too small to be a valid image.'
+    });
+  }
+
+  // 5. Inspect magic bytes to confirm the payload is a genuine supported image
+  const metadata = detectImageMetadata(decodedBuffer);
+  if (metadata.format === 'image/gif') {
+    return res.status(400).json({
+      success: false,
+      error: 'Unsupported image format (image/gif). Only JPG, JPEG, PNG, and WEBP images are supported.'
+    });
+  }
+  if (metadata.format === 'image/bmp' || metadata.format === 'image/tiff') {
+    return res.status(400).json({
+      success: false,
+      error: `Unsupported image format (${metadata.format}). Only JPG, JPEG, PNG, and WEBP images are supported.`
+    });
+  }
+  if (!metadata.format || !['image/jpeg', 'image/png', 'image/webp'].includes(metadata.format)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Decoded payload is not a valid image. Magic bytes do not match supported formats (JPEG, PNG, WEBP).'
+    });
+  }
+
+  const detectedMime = metadata.format;
+
+  // 6. Verify declared MIME type and detected image format do not contradict
+  if (declaredMime) {
+    const normalizedDeclared = declaredMime === 'image/jpg' ? 'image/jpeg' : declaredMime;
+    if (normalizedDeclared !== detectedMime) {
+      return res.status(400).json({
+        success: false,
+        error: `Detected image format (${detectedMime}) contradicts declared MIME type (${declaredMime}).`
+      });
+    }
+  }
+
+  const effectiveMime = detectedMime;
+
+  // 7. Enforce image dimensions and decompression bounds (mitigates decompression bombs / pixel floods)
+  if (metadata.width !== undefined && metadata.height !== undefined) {
+    const maxDimension = 10000;
+    const maxPixels = 100_000_000; // 100 megapixels
+    if (metadata.width > maxDimension || metadata.height > maxDimension || (metadata.width * metadata.height) > maxPixels) {
+      return res.status(400).json({
+        success: false,
+        error: `Image dimensions (${metadata.width}x${metadata.height}) exceed maximum allowed dimensions (10000x10000) or 100 megapixels.`
+      });
+    }
+    if (metadata.width < 1 || metadata.height < 1) {
+      return res.status(400).json({
+        success: false,
+        error: 'Image dimensions must be at least 1x1 pixel.'
+      });
+    }
+  }
+
+  // 8. Check Gemini configuration before proceeding (BUG 4)
   if (!isGeminiConfigured()) {
     return res.status(503).json({
       success: false,
@@ -239,7 +478,7 @@ router.post('/analyze', async (req, res) => {
 
   try {
     const catalog = getFullCatalog();
-    const extracted = await analyzeBookCover(imageBase64, effectiveMime);
+    const extracted = await visionAnalysisHandler(imageBase64, effectiveMime);
 
     if (!extracted) {
       return res.status(404).json({
@@ -298,7 +537,7 @@ router.post('/analyze', async (req, res) => {
       }
 
       // Check OpenLibrary for this ISBN if not found in local catalog
-      const externalBook = await lookupOpenLibraryByIsbn(cleanIsbn);
+      const externalBook = await externalIsbnLookupHandler(cleanIsbn);
       if (externalBook) {
         return res.json({
           success: true,
@@ -355,7 +594,12 @@ router.post('/analyze', async (req, res) => {
 
     // Step C: Fallback to OpenLibrary external title/author lookup (BUG 2 Fallback 6)
     if (extracted.title) {
-      const extBookByTitle = await searchOpenLibraryByTitleAuthor(extracted.title, extracted.author);
+      let extBookByTitle: any = null;
+      try {
+        extBookByTitle = await externalSearchHandler(extracted.title, extracted.author);
+      } catch (searchErr) {
+        // Handled gracefully
+      }
       if (extBookByTitle) {
         return res.json({
           success: true,
@@ -384,10 +628,10 @@ router.post('/analyze', async (req, res) => {
     });
 
   } catch (err: any) {
-    console.error('Optical scanner error:', err);
-    res.status(500).json({ 
-      success: false, 
-      error: err.message || 'Optical vision analysis failed.' 
+    console.error('Optical scanner error:', err.message || err);
+    res.status(502).json({
+      success: false,
+      error: 'Optical vision analysis failed or timed out.'
     });
   }
 });
@@ -396,7 +640,7 @@ router.post('/analyze', async (req, res) => {
  * 3. Textual / Title / Metadata Search Matcher
  * Runs the deterministic matcher on arbitrary user query or explicit metadata.
  */
-router.post('/match-text', (req, res) => {
+router.post('/match-text', scannerLimiter, (req, res) => {
   const { query, title, author, isbn, rawTextLines } = req.body;
 
   const catalog = getFullCatalog();

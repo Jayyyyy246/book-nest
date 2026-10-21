@@ -15,9 +15,13 @@ export const wishlistController = {
     const userId = req.user?.id;
     const bookId = Number(req.params.bookId);
 
-    const book = db.prepare('SELECT id, title FROM books WHERE id = ?').get(bookId) as any;
+    const book = db.prepare('SELECT id, title, is_archived FROM books WHERE id = ?').get(bookId) as any;
     if (!book) {
       return res.status(404).json({ error: 'Book not found.' });
+    }
+
+    if (book.is_archived === 1) {
+      return res.status(400).json({ error: `"${book.title}" is archived and no longer available.` });
     }
 
     db.prepare('INSERT OR IGNORE INTO wishlist (user_id, book_id) VALUES (?, ?)').run(userId, bookId);
@@ -44,6 +48,13 @@ export const wishlistController = {
       db.prepare('DELETE FROM wishlist WHERE user_id = ? AND book_id = ?').run(userId, bookId);
       return res.json({ action: 'removed', bookId, isWishlisted: false });
     } else {
+      const book = db.prepare('SELECT id, title, is_archived FROM books WHERE id = ?').get(bookId) as any;
+      if (!book) {
+        return res.status(404).json({ error: 'Book not found.' });
+      }
+      if (book.is_archived === 1) {
+        return res.status(400).json({ error: `"${book.title}" is archived and no longer available.` });
+      }
       db.prepare('INSERT INTO wishlist (user_id, book_id) VALUES (?, ?)').run(userId, bookId);
       return res.json({ action: 'added', bookId, isWishlisted: true });
     }

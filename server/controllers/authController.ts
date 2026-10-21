@@ -1,8 +1,64 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import { OAuth2Client } from 'google-auth-library';
 import { db } from '../database/index.js';
 import { generateToken, AuthRequest } from '../middleware/auth.js';
 import { config } from '../config/index.js';
+
+export interface VerifiedGoogleUser {
+  email: string;
+  name: string;
+  googleId: string;
+  avatarUrl?: string | null;
+  emailVerified: boolean;
+}
+
+export type GoogleTokenVerifier = (idToken: string) => Promise<VerifiedGoogleUser>;
+
+const googleAuthClient = new OAuth2Client(config.googleClientId);
+
+export const defaultGoogleTokenVerifier: GoogleTokenVerifier = async (idToken: string): Promise<VerifiedGoogleUser> => {
+  if (!config.googleClientId || !config.googleClientId.trim() || config.googleClientId === 'MY_GOOGLE_CLIENT_ID') {
+    throw new Error('Google OAuth client ID is not configured on this server.');
+  }
+
+  const ticket = await googleAuthClient.verifyIdToken({
+    idToken,
+    audience: config.googleClientId,
+  });
+
+  const payload = ticket.getPayload();
+  if (!payload) {
+    throw new Error('Missing token payload from Google verification.');
+  }
+
+  const issuer = payload.iss;
+  if (issuer !== 'accounts.google.com' && issuer !== 'https://accounts.google.com') {
+    throw new Error('Invalid token issuer.');
+  }
+
+  if (!payload.email) {
+    throw new Error('Google token does not contain an email address.');
+  }
+
+  if (!payload.email_verified) {
+    throw new Error('Google account email is not verified.');
+  }
+
+  return {
+    email: payload.email.trim().toLowerCase(),
+    name: String(payload.name || payload.email.split('@')[0] || 'Campus Scholar').trim(),
+    googleId: payload.sub,
+    avatarUrl: payload.picture || null,
+    emailVerified: Boolean(payload.email_verified),
+  };
+};
+
+let currentGoogleTokenVerifier: GoogleTokenVerifier = defaultGoogleTokenVerifier;
+
+export function setGoogleTokenVerifier(verifier?: GoogleTokenVerifier | null) {
+  currentGoogleTokenVerifier = verifier || defaultGoogleTokenVerifier;
+}
 
 export const authController = {
   // POST /api/auth/register
@@ -91,16 +147,20 @@ export const authController = {
 
   // GET /api/auth/demo-users
   getDemoUsers: (req: Request, res: Response) => {
+    if (config.nodeEnv === 'production') {
+      return res.status(404).json({ error: 'Endpoint not available in production.' });
+    }
+
     res.json({
       student: {
         email: 'user@booknest.com',
-        password: 'User@123',
-        name: 'Aditya Chauhan (Student)'
+        name: 'Aditya Chauhan (Student)',
+        role: 'user'
       },
       admin: {
         email: 'admin@booknest.com',
-        password: 'Admin@123',
-        name: 'Campus Administrator'
+        name: 'Campus Administrator',
+        role: 'admin'
       }
     });
   },
@@ -212,35 +272,29 @@ export const authController = {
 
   // POST /api/auth/google (Credential or Token Authentication)
   googleLogin: async (req: Request, res: Response) => {
-    const { credential, email: directEmail, name: directName, googleId: directGoogleId } = req.body;
+    const { credential } = req.body;
 
-    let email = '';
-    let name = '';
-    let googleId = '';
-    let avatarUrl: string | null = null;
-
-    if (credential && typeof credential === 'string') {
-      try {
-        // Decode Google JWT credential
-        const parts = credential.split('.');
-        if (parts.length === 3) {
-          const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-          email = String(payload.email || '').trim().toLowerCase();
-          name = String(payload.name || email.split('@')[0] || 'Campus Scholar').trim();
-          googleId = String(payload.sub || '');
-          avatarUrl = payload.picture || null;
-        }
-      } catch (err) {
-        return res.status(400).json({ error: 'Invalid Google credential token.' });
-      }
-    } else if (directEmail) {
-      email = String(directEmail).trim().toLowerCase();
-      name = String(directName || email.split('@')[0] || 'Campus Scholar').trim();
-      googleId = String(directGoogleId || 'google_' + Date.now());
+    // Reject requests without a valid credential string (AUTH-01)
+    if (!credential || typeof credential !== 'string' || !credential.trim()) {
+      return res.status(400).json({
+        error: 'A valid Google ID token credential is required for Google sign-in.'
+      });
     }
 
+    // Cryptographically verify Google ID token (AUTH-02)
+    let verifiedUser: VerifiedGoogleUser;
+    try {
+      verifiedUser = await currentGoogleTokenVerifier(credential.trim());
+    } catch (err: any) {
+      return res.status(401).json({
+        error: 'Google authentication failed: ' + (err.message || 'Invalid or expired ID token.')
+      });
+    }
+
+    const { email, name, googleId, avatarUrl } = verifiedUser;
+
     if (!email) {
-      return res.status(400).json({ error: 'Valid email is required for Google sign-in.' });
+      return res.status(400).json({ error: 'Valid email is required from Google authentication.' });
     }
 
     let user = db.prepare('SELECT id, name, email, role, phone, joined_date as joinedDate FROM users WHERE email = ?').get(email) as any;
@@ -250,13 +304,13 @@ export const authController = {
       const insertRes = db.prepare(`
         INSERT INTO users (name, email, password_hash, role, google_id, avatar_url, joined_date)
         VALUES (?, ?, ?, 'user', ?, ?, 'Today')
-      `).run(name, email, dummyPasswordHash, googleId, avatarUrl);
+      `).run(name, email, dummyPasswordHash, googleId, avatarUrl || null);
 
       user = db.prepare('SELECT id, name, email, role, phone, joined_date as joinedDate FROM users WHERE id = ?').get(insertRes.lastInsertRowid) as any;
     } else {
       try {
         db.prepare('UPDATE users SET google_id = COALESCE(google_id, ?), avatar_url = COALESCE(avatar_url, ?) WHERE id = ?')
-          .run(googleId, avatarUrl, user.id);
+          .run(googleId, avatarUrl || null, user.id);
       } catch {}
     }
 

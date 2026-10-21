@@ -12,7 +12,9 @@
     "clean": "node -e \"const fs=require('fs'); fs.rmSync('dist', {recursive:true,force:true});\"",
     "lint": "tsc --noEmit",
     "test:ui": "node scripts/audit-browser.mjs",
-    "test:persistence": "node scripts/test-persistence.mjs"
+    "test:persistence": "tsx scripts/test-persistence.mjs",
+    "test:scanner": "tsx scripts/test-scanner.mjs",
+    "test:e2e": "tsx scripts/verify-all-fixes.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -28,6 +30,7 @@
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
+    "google-auth-library": "^10.9.1",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",

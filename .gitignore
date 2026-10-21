@@ -8,3 +8,10 @@ coverage/
 !.env.example
 *.db-shm
 *.db-wal
+
+# Local test-only SQLite databases and journals
+*.test.db
+*.test.db-journal
+*.test.db-wal
+*.test.db-shm
+data/*.test.db*

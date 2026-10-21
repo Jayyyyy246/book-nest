@@ -15,6 +15,8 @@ import { QuickViewModal } from './components/QuickViewModal';
 import { OrdersView } from './components/OrdersView';
 import { WishlistView } from './components/WishlistView';
 import { AuthModal } from './components/AuthModal';
+import { AIReadingAdvisor } from './components/AIReadingAdvisor';
+import { BookDetailPage } from './components/BookDetailPage';
 
 export const CATALOG_CATEGORIES = [
   { slug: 'all', label: 'All Shelves' },
@@ -39,28 +41,60 @@ export const CATALOG_CATEGORIES = [
   { slug: 'other', label: 'Other' },
 ];
 
+export type AppView = 'store' | 'catalog' | 'scanner' | 'admin' | 'orders' | 'wishlist' | 'book';
+
+export function parseRouteFromHash(): { view: AppView; bookId: string | null } {
+  try {
+    const raw = window.location.hash.replace(/^#\/?/, '').trim();
+    if (raw.startsWith('book/')) {
+      const id = raw.replace(/^book\//, '').trim();
+      return { view: 'book', bookId: id || null };
+    }
+    const clean = raw.split('/')[0];
+    if (['store', 'catalog', 'scanner', 'admin', 'orders', 'wishlist'].includes(clean)) {
+      return { view: clean as AppView, bookId: null };
+    }
+    const saved = localStorage.getItem('booknest_active_view');
+    if (saved && ['store', 'catalog', 'scanner', 'admin', 'orders', 'wishlist'].includes(saved)) {
+      return { view: saved as AppView, bookId: null };
+    }
+  } catch {}
+  return { view: 'store', bookId: null };
+}
+
 export default function App() {
   // Navigation & View state (persisted across page reloads via hash and localStorage)
-  const [activeView, setActiveView] = useState<'store' | 'catalog' | 'scanner' | 'admin' | 'orders' | 'wishlist'>(() => {
-    try {
-      const hash = window.location.hash.replace(/^#/, '') as any;
-      if (['store', 'catalog', 'scanner', 'admin', 'orders', 'wishlist'].includes(hash)) {
-        return hash;
-      }
-      const saved = localStorage.getItem('booknest_active_view') as any;
-      if (['store', 'catalog', 'scanner', 'admin', 'orders', 'wishlist'].includes(saved)) {
-        return saved;
-      }
-    } catch {}
-    return 'store';
-  });
+  const [activeView, setActiveView] = useState<AppView>(() => parseRouteFromHash().view);
+  const [selectedBookId, setSelectedBookId] = useState<string | null>(() => parseRouteFromHash().bookId);
 
   useEffect(() => {
     try {
-      localStorage.setItem('booknest_active_view', activeView);
-      window.location.hash = activeView;
+      if (activeView === 'book' && selectedBookId) {
+        window.location.hash = `/book/${selectedBookId}`;
+      } else {
+        localStorage.setItem('booknest_active_view', activeView);
+        window.location.hash = activeView;
+      }
     } catch {}
-  }, [activeView]);
+  }, [activeView, selectedBookId]);
+
+  // Synchronize state when browser Back / Forward or external hash changes occur
+  useEffect(() => {
+    const handleHashChange = () => {
+      const { view, bookId } = parseRouteFromHash();
+      setActiveView(view);
+      setSelectedBookId(bookId);
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  const navigateToBook = (bookId: number | string) => {
+    setActiveView('book');
+    setSelectedBookId(String(bookId));
+    window.location.hash = `/book/${bookId}`;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
   
   // Data state
   const [books, setBooks] = useState<Book[]>(INITIAL_BOOKS);
@@ -86,6 +120,7 @@ export default function App() {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [isAiAdvisorOpen, setIsAiAdvisorOpen] = useState(false);
   const [quickViewBook, setQuickViewBook] = useState<Book | null>(null);
 
   // Filters & Sorting in Catalog
@@ -221,6 +256,10 @@ export default function App() {
       showToast(`"${book.title}" is currently out of stock`, 'error');
       return;
     }
+    setBooks(prev => {
+      if (prev.some(b => b.id === book.id)) return prev;
+      return [...prev, book];
+    });
     const currentQty = cart[book.id] || 0;
     const newQty = Math.min(book.stock, currentQty + quantity);
     const newCart = { ...cart, [book.id]: newQty };
@@ -359,6 +398,8 @@ export default function App() {
         const finalPrice = Math.round(b.price * (1 - b.discount / 100));
         subtotal += finalPrice * qty;
         originalTotal += b.price * qty;
+        itemCount += qty;
+      } else {
         itemCount += qty;
       }
     });
@@ -515,6 +556,14 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#FAF8F5] text-slate-900 font-sans selection:bg-amber-200 selection:text-slate-950 flex flex-col">
       
+      {/* Skip to Main Content Link for keyboard & screen reader accessibility */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:px-4 focus:py-2 focus:bg-amber-500 focus:text-slate-950 focus:font-bold focus:rounded-xl focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
+      >
+        Skip to main content
+      </a>
+
       {/* Global Sticky Navigation */}
       <Navbar
         books={books}
@@ -524,17 +573,19 @@ export default function App() {
         currentUser={currentUser}
         onNavigate={(view) => {
           setActiveView(view);
+          setSelectedBookId(null);
           window.scrollTo({ top: 0, behavior: 'smooth' });
         }}
         onOpenCart={() => setIsCartOpen(true)}
         onSelectBook={(book) => setQuickViewBook(book)}
         onOpenAuth={() => setIsAuthOpen(true)}
         onLogout={handleLogout}
+        onOpenAiAdvisor={() => setIsAiAdvisorOpen(true)}
       />
 
       {/* ================= VIEW: HOME STOREFRONT ================= */}
       {activeView === 'store' && (
-        <main className="flex-1">
+        <main id="main-content" tabIndex={-1} className="flex-1 focus:outline-none">
           {/* Editorial Hero Section with live metrics */}
           <HeroSection
             featuredBook={featuredBook}
@@ -547,6 +598,7 @@ export default function App() {
             }}
             onExploreBooks={() => setActiveView('catalog')}
             onOpenScanner={() => setActiveView('scanner')}
+            onOpenAiAdvisor={() => setIsAiAdvisorOpen(true)}
             onAddToCart={addToCart}
             onQuickView={(book) => setQuickViewBook(book)}
           />
@@ -709,7 +761,7 @@ export default function App() {
 
       {/* ================= VIEW: BOOK CATALOG ================= */}
       {activeView === 'catalog' && (
-        <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 w-full">
+        <main id="main-content" tabIndex={-1} className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 w-full focus:outline-none">
           
           {/* Catalog Top Bar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8 pb-6 border-b border-slate-200">
@@ -885,7 +937,7 @@ export default function App() {
 
       {/* ================= VIEW: OPTICAL SCANNER ================= */}
       {activeView === 'scanner' && (
-        <main className="flex-1">
+        <main id="main-content" tabIndex={-1} className="flex-1 focus:outline-none">
           <EditorialScannerView
             books={books}
             onAddToCart={addToCart}
@@ -897,7 +949,7 @@ export default function App() {
 
       {/* ================= VIEW: ADMIN DASHBOARD ================= */}
       {activeView === 'admin' && (
-        <main className="flex-1">
+        <main id="main-content" tabIndex={-1} className="flex-1 focus:outline-none">
           {currentUser?.role === 'admin' ? (
             <AdminDashboard
               books={books}
@@ -928,7 +980,7 @@ export default function App() {
 
       {/* ================= VIEW: ORDERS & TRACKING ================= */}
       {activeView === 'orders' && (
-        <main className="flex-1 max-w-5xl mx-auto px-4 sm:px-6 py-10 w-full">
+        <main id="main-content" tabIndex={-1} className="flex-1 max-w-5xl mx-auto px-4 sm:px-6 py-10 w-full focus:outline-none">
           {currentUser ? (
             <OrdersView
               orders={placedOrders}
@@ -937,6 +989,16 @@ export default function App() {
                 addToCart(book, 1);
                 setIsCartOpen(true);
               }}
+              onCancelOrder={async (orderId) => {
+                const res = await api.cancelOrder(orderId);
+                showToast(res.message || 'Order successfully cancelled.', 'success');
+                loadUserData();
+                api.getBooks().then(bRes => {
+                  if (bRes.books) setBooks(bRes.books);
+                }).catch(() => {});
+              }}
+              onRefreshOrders={loadUserData}
+              showToast={showToast}
             />
           ) : (
             <div className="max-w-md mx-auto my-16 p-8 bg-white rounded-3xl border border-slate-200 shadow-xl text-center space-y-4">
@@ -960,7 +1022,7 @@ export default function App() {
 
       {/* ================= VIEW: WISHLIST ================= */}
       {activeView === 'wishlist' && (
-        <main className="flex-1 max-w-5xl mx-auto px-4 sm:px-6 py-10 w-full">
+        <main id="main-content" tabIndex={-1} className="flex-1 max-w-5xl mx-auto px-4 sm:px-6 py-10 w-full focus:outline-none">
           <WishlistView
             wishlist={wishlist}
             books={books}
@@ -971,6 +1033,38 @@ export default function App() {
             onOpenBookDetail={(b) => setQuickViewBook(b)}
           />
         </main>
+      )}
+
+      {/* ================= VIEW: DEDICATED BOOK DETAIL PAGE ================= */}
+      {activeView === 'book' && selectedBookId && (
+        <BookDetailPage
+          key={selectedBookId}
+          bookId={selectedBookId}
+          allBooks={books}
+          wishlist={wishlist}
+          currentUser={currentUser}
+          onAddToCart={addToCart}
+          onToggleWishlist={toggleWishlist}
+          onNavigateToCatalog={() => {
+            setActiveView('catalog');
+            setSelectedBookId(null);
+            window.location.hash = 'catalog';
+          }}
+          onNavigateToHome={() => {
+            setActiveView('store');
+            setSelectedBookId(null);
+            window.location.hash = 'store';
+          }}
+          onSelectCategory={(slug) => {
+            setSelectedCategory(slug);
+            setActiveView('catalog');
+            setSelectedBookId(null);
+            window.location.hash = 'catalog';
+          }}
+          onOpenBookDetail={(id) => navigateToBook(id)}
+          onOpenAuth={() => setIsAuthOpen(true)}
+          showToast={showToast}
+        />
       )}
 
       {/* ================= GLOBAL SLIDE-OVER SHOPPING CART ================= */}
@@ -1040,17 +1134,46 @@ export default function App() {
         onOpenAuth={() => setIsAuthOpen(true)}
         allBooks={books}
         onSelectBook={(b) => setQuickViewBook(b)}
+        onViewFullDetails={(b) => navigateToBook(b.id)}
       />
+
+      {/* ================= AI READING ADVISOR MODAL ================= */}
+      <AIReadingAdvisor
+        isOpen={isAiAdvisorOpen}
+        onClose={() => setIsAiAdvisorOpen(false)}
+        currentUser={currentUser}
+        allBooks={books}
+        wishlist={wishlist}
+        onToggleWishlist={toggleWishlist}
+        onAddToCart={addToCart}
+        onQuickView={(b) => setQuickViewBook(b)}
+        onOpenAuth={() => setIsAuthOpen(true)}
+      />
+
+      {/* ================= SCREEN READER LIVE ANNOUNCER ================= */}
+      <div
+        data-testid="screen-reader-announcer"
+        className="sr-only"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {toast?.message || ''}
+      </div>
 
       {/* ================= TOAST NOTIFICATION ================= */}
       {toast && (
-        <div className={`fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-2xl shadow-2xl border text-xs font-semibold animate-in slide-in-from-bottom-3 duration-200 ${
-          toast.type === 'error'
-            ? 'bg-rose-950 text-white border-rose-800'
-            : toast.type === 'info'
-            ? 'bg-slate-900 text-amber-200 border-slate-700'
-            : 'bg-slate-950 text-white border-slate-800'
-        }`}>
+        <div
+          role={toast.type === 'error' ? 'alert' : 'status'}
+          aria-live={toast.type === 'error' ? 'assertive' : 'polite'}
+          aria-atomic="true"
+          className={`fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-2xl shadow-2xl border text-xs font-semibold animate-in slide-in-from-bottom-3 duration-200 ${
+            toast.type === 'error'
+              ? 'bg-rose-950 text-white border-rose-800'
+              : toast.type === 'info'
+              ? 'bg-slate-900 text-amber-200 border-slate-700'
+              : 'bg-slate-950 text-white border-slate-800'
+          }`}
+        >
           <i className={`fa-solid ${
             toast.type === 'error' ? 'fa-circle-xmark text-rose-400' :
             toast.type === 'info' ? 'fa-circle-info text-amber-400' :

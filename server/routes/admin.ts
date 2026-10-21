@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db } from '../db/database.js';
 import { requireAdmin, AuthRequest } from '../middleware/auth.js';
 import { booksController } from '../controllers/booksController.js';
+import { ordersController } from '../controllers/ordersController.js';
 
 const router = Router();
 
@@ -102,26 +103,8 @@ router.get('/orders', (req, res) => {
   res.json({ orders: formattedOrders });
 });
 
-// Update order dispatch status (Supports both PUT and PATCH)
-const updateStatusHandler = (req: any, res: any) => {
-  const { id } = req.params;
-  const { status } = req.body;
-
-  const validStatuses = ['Confirmed', 'Processing', 'Shipped', 'Delivered', 'Cancelled'];
-  if (!validStatuses.includes(status)) {
-    return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
-  }
-
-  const result = db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(status, id);
-  if (result.changes === 0) {
-    return res.status(404).json({ error: 'Order not found.' });
-  }
-
-  res.json({ success: true, message: `Order #${id} status updated to ${status}.`, orderId: Number(id), status });
-};
-
-router.patch('/orders/:id/status', updateStatusHandler);
-router.put('/orders/:id/status', updateStatusHandler);
+router.patch('/orders/:id/status', ordersController.updateOrderStatus);
+router.put('/orders/:id/status', ordersController.updateOrderStatus);
 
 // Add new book to catalog
 router.post('/books', (req, res) => {

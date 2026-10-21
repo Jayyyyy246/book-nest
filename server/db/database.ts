@@ -1,1 +1,1 @@
-export { db, initDatabase } from '../database/index.js';
+export { db, initDatabase, closeDatabase } from '../database/index.js';

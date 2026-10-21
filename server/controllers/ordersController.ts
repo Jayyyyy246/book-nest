@@ -1,6 +1,23 @@
+import crypto from 'crypto';
 import { Response } from 'express';
 import { db } from '../database/index.js';
 import { AuthRequest } from '../middleware/auth.js';
+
+function ensureIdempotencyTable() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS idempotency_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      response_status INTEGER NOT NULL,
+      response_body TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_idempotency_user_key ON idempotency_keys(user_id, key);
+  `);
+}
 
 export const ordersController = {
   // GET /api/orders
@@ -41,9 +58,9 @@ export const ordersController = {
         b.cover_image as coverImage,
         b.isbn
       FROM order_items oi
-      JOIN books b ON oi.book_id = b.id
-      JOIN authors a ON b.author_id = a.id
-      JOIN categories c ON b.category_id = c.id
+      LEFT JOIN books b ON oi.book_id = b.id
+      LEFT JOIN authors a ON b.author_id = a.id
+      LEFT JOIN categories c ON b.category_id = c.id
       WHERE oi.order_id = ?
     `);
 
@@ -118,9 +135,9 @@ export const ordersController = {
         b.cover_image as coverImage,
         b.isbn
       FROM order_items oi
-      JOIN books b ON oi.book_id = b.id
-      JOIN authors a ON b.author_id = a.id
-      JOIN categories c ON b.category_id = c.id
+      LEFT JOIN books b ON oi.book_id = b.id
+      LEFT JOIN authors a ON b.author_id = a.id
+      LEFT JOIN categories c ON b.category_id = c.id
       WHERE oi.order_id = ?
     `).all(order.id) as any[];
 
@@ -171,115 +188,258 @@ export const ordersController = {
   // POST /api/orders
   createOrder: (req: AuthRequest, res: Response) => {
     const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ error: 'Authentication required to place an order.' });
+    }
+
     const {
       address,
       paymentMethod = 'UPI',
       items,
+      couponCode: explicitCouponCode,
       summary
     } = req.body;
 
+    // 1. Validate delivery address
     if (!address || !address.fullName || !address.hostelBlock || !address.roomNo || !address.phone) {
       return res.status(400).json({ error: 'Complete campus delivery address is required.' });
     }
 
+    // 2. Validate items array
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Order must contain at least one book.' });
     }
 
+    // 3. Pre-validate individual item structures & consolidate quantities by bookId
+    const consolidatedItemsMap = new Map<number, number>();
+    for (const item of items) {
+      const bookId = Number(item.bookId || item.book?.id);
+      const qty = Number(item.quantity);
+      if (!bookId || isNaN(bookId) || bookId <= 0 || !Number.isInteger(qty) || qty <= 0) {
+        return res.status(400).json({ error: 'Invalid book ID or quantity in order payload.' });
+      }
+      if (qty > 99) {
+        return res.status(400).json({ error: 'Maximum quantity per book is 99 units.' });
+      }
+      consolidatedItemsMap.set(bookId, (consolidatedItemsMap.get(bookId) || 0) + qty);
+    }
+
+    for (const [bookId, totalQty] of consolidatedItemsMap.entries()) {
+      if (totalQty > 99) {
+        return res.status(400).json({ error: `Total requested quantity for book ID ${bookId} exceeds maximum allowed limit of 99 units.` });
+      }
+    }
+
+    // 4. Server-Side Idempotency-Key Check
+    const rawIdempotencyKey = (req.headers['idempotency-key'] || req.headers['x-idempotency-key']) as string | undefined;
+    let cleanIdempotencyKey: string | null = null;
+    let requestPayloadHash: string | null = null;
+
+    if (rawIdempotencyKey !== undefined) {
+      if (typeof rawIdempotencyKey !== 'string' || !rawIdempotencyKey.trim()) {
+        return res.status(400).json({ error: 'Idempotency-Key header must be a non-empty string.' });
+      }
+      cleanIdempotencyKey = rawIdempotencyKey.trim();
+      if (cleanIdempotencyKey.length > 255) {
+        return res.status(400).json({ error: 'Idempotency-Key header exceeds maximum length of 255 characters.' });
+      }
+
+      ensureIdempotencyTable();
+
+      const normalizedItems = Array.from(consolidatedItemsMap.entries())
+        .map(([bookId, quantity]) => ({ bookId, quantity }))
+        .sort((a, b) => a.bookId - b.bookId);
+
+      requestPayloadHash = crypto
+        .createHash('sha256')
+        .update(JSON.stringify({
+          userId,
+          address: {
+            fullName: String(address.fullName).trim(),
+            phone: String(address.phone).trim(),
+            hostelBlock: String(address.hostelBlock).trim(),
+            roomNo: String(address.roomNo).trim()
+          },
+          items: normalizedItems,
+          couponCode: (explicitCouponCode || summary?.couponCode || '').trim().toUpperCase(),
+          paymentMethod: String(paymentMethod).toUpperCase()
+        }))
+        .digest('hex');
+
+      const existingRecord = db.prepare(`
+        SELECT response_status, response_body, request_hash
+        FROM idempotency_keys
+        WHERE user_id = ? AND key = ?
+      `).get(userId, cleanIdempotencyKey) as any;
+
+      if (existingRecord) {
+        if (existingRecord.request_hash === requestPayloadHash) {
+          res.setHeader('Idempotent-Replayed', 'true');
+          const cachedJson = JSON.parse(existingRecord.response_body);
+          return res.status(existingRecord.response_status).json(cachedJson);
+        } else {
+          return res.status(409).json({
+            error: 'Idempotency conflict: A previous request was processed with this Idempotency-Key but with a different payload.'
+          });
+        }
+      }
+    }
+
     const orderNumber = `BN-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
 
-    // Atomic transaction: Check stock -> Decrement stock -> Insert order & items -> Clear cart
-    const placeOrderTx = db.transaction(() => {
-      // 1. Validate stock for every item
-      for (const item of items) {
-        const bookId = item.bookId || item.book?.id;
-        const book = db.prepare('SELECT id, title, stock, price, discount FROM books WHERE id = ?').get(bookId) as any;
-        if (!book) {
-          throw new Error(`Book ID ${bookId} does not exist in catalog.`);
-        }
-        if (book.stock < item.quantity) {
-          throw new Error(`Insufficient stock for "${book.title}". Available: ${book.stock}, Requested: ${item.quantity}`);
-        }
-      }
-
-      // 2. Decrement stock & assemble line items
-      const lineItemsToInsert: any[] = [];
-      for (const item of items) {
-        const bookId = item.bookId || item.book?.id;
-        const qty = item.quantity;
-        db.prepare('UPDATE books SET stock = stock - ? WHERE id = ?').run(qty, bookId);
-
-        const book = db.prepare('SELECT id, title, price, discount FROM books WHERE id = ?').get(bookId) as any;
-        const unitPrice = Math.round(book.price * (1 - book.discount / 100));
-        const lineTotal = unitPrice * qty;
-        lineItemsToInsert.push({ bookId, quantity: qty, unitPrice, lineTotal });
-      }
-
-      // 3. Insert order
-      const grandTotal = summary?.grandTotal || lineItemsToInsert.reduce((sum, i) => sum + i.lineTotal, 0);
-      const subtotal = summary?.subtotal || grandTotal;
-      const discountAmount = summary?.couponDiscount || 0;
-      const deliveryFee = summary?.deliveryFee || 0;
-      const gstAmount = summary?.gstAmount || 0;
-
-      const orderInsertResult = db.prepare(`
-        INSERT INTO orders (
-          user_id, order_number, status, payment_method, payment_status,
-          subtotal, discount_amount, delivery_fee, gst_amount, grand_total,
-          full_name, phone, hostel_block, room_no, delivery_notes
-        ) VALUES (?, ?, 'Confirmed', ?, 'DEMO PAID', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        userId,
-        orderNumber,
-        paymentMethod.toUpperCase(),
-        subtotal,
-        discountAmount,
-        deliveryFee,
-        gstAmount,
-        grandTotal,
-        address.fullName,
-        address.phone,
-        address.hostelBlock,
-        address.roomNo,
-        address.deliveryNotes || ''
-      );
-
-      const newOrderId = Number(orderInsertResult.lastInsertRowid);
-
-      // 4. Insert order items
-      const insertItemStmt = db.prepare(`
-        INSERT INTO order_items (order_id, book_id, quantity, unit_price, line_total)
-        VALUES (?, ?, ?, ?, ?)
-      `);
-
-      for (const lineItem of lineItemsToInsert) {
-        insertItemStmt.run(newOrderId, lineItem.bookId, lineItem.quantity, lineItem.unitPrice, lineItem.lineTotal);
-      }
-
-      // 5. Save address for user
-      db.prepare(`
-        INSERT INTO addresses (user_id, full_name, phone, hostel_block, room_no, is_default)
-        VALUES (?, ?, ?, ?, ?, 1)
-      `).run(userId, address.fullName, address.phone, address.hostelBlock, address.roomNo);
-
-      // 6. Clear user cart
-      db.prepare('DELETE FROM cart_items WHERE user_id = ?').run(userId);
-
-      return newOrderId;
-    });
-
     try {
-      const orderId = placeOrderTx();
+      // Execute atomic transaction with immediate write lock:
+      // Stock verification -> authoritative pricing -> row-level stock decrement -> order insertion -> cart cleanup
+      const orderTxResult = db.transaction(() => {
+        const lineItemsToInsert: Array<{
+          bookId: number;
+          quantity: number;
+          unitPrice: number;
+          lineTotal: number;
+        }> = [];
+
+        // 1. Authoritative price and stock check for every item
+        for (const [bookId, qty] of consolidatedItemsMap.entries()) {
+          const book = db.prepare(`
+            SELECT id, title, stock, price, discount, is_archived
+            FROM books
+            WHERE id = ?
+          `).get(bookId) as any;
+
+          if (!book) {
+            throw new Error(`Book ID ${bookId} does not exist in catalog.`);
+          }
+
+          if (book.is_archived === 1) {
+            throw new Error(`"${book.title}" is archived and no longer available for purchase.`);
+          }
+
+          if (book.stock < qty) {
+            throw new Error(`Insufficient stock for "${book.title}". Available: ${book.stock}, Requested: ${qty}`);
+          }
+
+          // Authoritative server-side price calculation
+          const unitPrice = Math.round(book.price * (1.0 - (book.discount || 0.0) / 100.0));
+          const lineTotal = unitPrice * qty;
+
+          lineItemsToInsert.push({
+            bookId,
+            quantity: qty,
+            unitPrice,
+            lineTotal
+          });
+        }
+
+        // 2. Server-side subtotal calculation
+        const serverSubtotal = lineItemsToInsert.reduce((sum, item) => sum + item.lineTotal, 0);
+
+        // 3. Server-side coupon recalculation & verification
+        const candidateCouponCode = (explicitCouponCode || summary?.couponCode || '').trim().toUpperCase();
+        let serverCouponDiscount = 0;
+        let appliedCouponCode: string | null = null;
+
+        if (candidateCouponCode) {
+          const coupon = db.prepare('SELECT * FROM coupons WHERE UPPER(code) = ? AND is_active = 1').get(candidateCouponCode) as any;
+          if (!coupon) {
+            throw new Error(`Invalid or expired coupon code "${candidateCouponCode}".`);
+          }
+
+          if (serverSubtotal < coupon.min_order_amount) {
+            throw new Error(`Coupon "${coupon.code}" requires a minimum cart subtotal of ₹${coupon.min_order_amount}. Current subtotal: ₹${serverSubtotal}.`);
+          }
+
+          if (coupon.discount_type === 'percent') {
+            serverCouponDiscount = Math.round(serverSubtotal * (coupon.discount_value / 100));
+          } else {
+            serverCouponDiscount = Math.min(serverSubtotal, coupon.discount_value);
+          }
+          appliedCouponCode = coupon.code;
+        }
+
+        // 4. Server-side delivery fee calculation (Free delivery threshold = ₹499)
+        const freeDeliveryThreshold = 499;
+        const serverDeliveryFee = (serverSubtotal >= freeDeliveryThreshold || serverSubtotal === 0) ? 0 : 49;
+
+        // 5. Server-side GST (5% academic book GST)
+        const serverGstAmount = Math.round(serverSubtotal * 0.05);
+
+        // 6. Server-side authoritative Grand Total
+        const serverGrandTotal = Math.max(0, serverSubtotal - serverCouponDiscount + serverDeliveryFee);
+
+        // 7. Decrement stock for purchased books with row-level oversell guard
+        for (const lineItem of lineItemsToInsert) {
+          const updateResult = db.prepare(`
+            UPDATE books
+            SET stock = stock - ?
+            WHERE id = ? AND stock >= ?
+          `).run(lineItem.quantity, lineItem.bookId, lineItem.quantity);
+
+          if (updateResult.changes === 0) {
+            throw new Error(`Insufficient stock for book ID ${lineItem.bookId}. Stock was claimed by a concurrent checkout.`);
+          }
+        }
+
+        // 8. Insert order record
+        const orderInsertResult = db.prepare(`
+          INSERT INTO orders (
+            user_id, order_number, status, payment_method, payment_status,
+            subtotal, discount_amount, delivery_fee, gst_amount, grand_total,
+            full_name, phone, hostel_block, room_no, delivery_notes
+          ) VALUES (?, ?, 'Confirmed', ?, 'DEMO PAID', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          userId,
+          orderNumber,
+          paymentMethod.toUpperCase(),
+          serverSubtotal,
+          serverCouponDiscount,
+          serverDeliveryFee,
+          serverGstAmount,
+          serverGrandTotal,
+          address.fullName,
+          address.phone,
+          address.hostelBlock,
+          address.roomNo,
+          address.deliveryNotes || ''
+        );
+
+        const newOrderId = Number(orderInsertResult.lastInsertRowid);
+
+        // 9. Insert order items
+        const insertItemStmt = db.prepare(`
+          INSERT INTO order_items (order_id, book_id, quantity, unit_price, line_total)
+          VALUES (?, ?, ?, ?, ?)
+        `);
+
+        for (const lineItem of lineItemsToInsert) {
+          insertItemStmt.run(newOrderId, lineItem.bookId, lineItem.quantity, lineItem.unitPrice, lineItem.lineTotal);
+        }
+
+        // 10. Update user default delivery address
+        db.prepare(`
+          INSERT INTO addresses (user_id, full_name, phone, hostel_block, room_no, is_default)
+          VALUES (?, ?, ?, ?, ?, 1)
+        `).run(userId, address.fullName, address.phone, address.hostelBlock, address.roomNo);
+
+        // 11. Clear user cart
+        db.prepare('DELETE FROM cart_items WHERE user_id = ?').run(userId);
+
+        return {
+          orderId: newOrderId,
+          appliedCouponCode
+        };
+      }).immediate();
+
+      const { orderId, appliedCouponCode } = orderTxResult;
 
       const createdOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any;
       const orderItems = db.prepare(`
         SELECT oi.*, b.title, b.isbn, b.cover_image as coverImage, b.price as originalPrice
         FROM order_items oi
-        JOIN books b ON oi.book_id = b.id
+        LEFT JOIN books b ON oi.book_id = b.id
         WHERE oi.order_id = ?
       `).all(orderId);
 
-      res.status(201).json({
+      const responsePayload = {
         success: true,
         message: 'Order confirmed and inventory updated successfully.',
         order: {
@@ -295,9 +455,10 @@ export const ordersController = {
           total: createdOrder.grand_total,
           summary: {
             subtotal: createdOrder.subtotal,
-            couponCode: createdOrder.coupon_code,
+            couponCode: appliedCouponCode,
             couponDiscount: createdOrder.discount_amount,
             deliveryFee: createdOrder.delivery_fee,
+            gstAmount: createdOrder.gst_amount,
             grandTotal: createdOrder.grand_total
           },
           status: createdOrder.status,
@@ -324,7 +485,21 @@ export const ordersController = {
             lineTotal: i.line_total
           }))
         }
-      });
+      };
+
+      // Store idempotency record if key was provided
+      if (cleanIdempotencyKey && requestPayloadHash) {
+        try {
+          db.prepare(`
+            INSERT INTO idempotency_keys (user_id, key, request_hash, response_status, response_body)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(userId, cleanIdempotencyKey, requestPayloadHash, 201, JSON.stringify(responsePayload));
+        } catch (idempErr) {
+          console.warn('Failed to record idempotency key:', idempErr);
+        }
+      }
+
+      res.status(201).json(responsePayload);
     } catch (err: any) {
       res.status(400).json({ error: err.message || 'Failed to process order.' });
     }
@@ -373,21 +548,159 @@ export const ordersController = {
     res.json({ orders: formattedOrders });
   },
 
-  // PUT /api/admin/orders/:id/status
+  // PUT & PATCH /api/admin/orders/:id/status
   updateOrderStatus: (req: AuthRequest, res: Response) => {
     const { id } = req.params;
     const { status } = req.body;
 
     const validStatuses = ['Confirmed', 'Processing', 'Shipped', 'Delivered', 'Cancelled'];
-    if (!validStatuses.includes(status)) {
+    if (!status || !validStatuses.includes(status)) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
     }
 
-    const result = db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(status, id);
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Order not found.' });
+    try {
+      const updateTx = db.transaction(() => {
+        const order = db.prepare('SELECT id, status FROM orders WHERE id = ?').get(id) as any;
+        if (!order) {
+          return { error: 'Order not found.', status: 404 };
+        }
+
+        const currentStatus = order.status;
+
+        // Idempotent: already at the requested status
+        if (currentStatus === status) {
+          return {
+            success: true,
+            message: `Order #${id} is already ${status}.`,
+            orderId: Number(id),
+            status,
+            statusChanged: false
+          };
+        }
+
+        // Terminal state: cancelled orders cannot be transitioned back to an active state
+        if (currentStatus === 'Cancelled') {
+          return {
+            error: 'Cannot update status of an already cancelled order.',
+            status: 400
+          };
+        }
+
+        // If transitioning TO Cancelled: restore stock for all line items exactly once
+        if (status === 'Cancelled') {
+          const items = db.prepare(`
+            SELECT book_id, quantity
+            FROM order_items
+            WHERE order_id = ?
+          `).all(id) as any[];
+
+          for (const item of items) {
+            db.prepare('UPDATE books SET stock = stock + ? WHERE id = ?').run(item.quantity, item.book_id);
+          }
+        }
+
+        // Update order status
+        db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(status, id);
+
+        return {
+          success: true,
+          message: `Order #${id} status updated to ${status}.`,
+          orderId: Number(id),
+          status,
+          statusChanged: true
+        };
+      }).immediate();
+
+      if (updateTx.error) {
+        return res.status(updateTx.status || 400).json({ error: updateTx.error });
+      }
+
+      return res.json(updateTx);
+    } catch (err: any) {
+      console.error('Error updating order status:', err);
+      return res.status(500).json({ error: 'Failed to update order status.' });
+    }
+  },
+
+  // POST & PATCH /api/orders/:id/cancel - Student Self-Service Order Cancellation
+  cancelOrder: (req: AuthRequest, res: Response) => {
+    const userId = req.user?.id;
+    const { id } = req.params;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Authentication required to cancel order.' });
     }
 
-    res.json({ success: true, message: `Order #${id} status updated to ${status}.`, orderId: Number(id), status });
+    if (!id || (typeof id === 'string' && !id.trim())) {
+      return res.status(400).json({ error: 'Valid order identifier is required.' });
+    }
+
+    try {
+      const cancelTx = db.transaction(() => {
+        // Query order by id or order_number with exclusive immediate lock
+        const order = db.prepare(`
+          SELECT id, user_id, order_number, status
+          FROM orders
+          WHERE id = ? OR order_number = ?
+        `).get(id, id) as any;
+
+        if (!order) {
+          return { error: 'Order not found.', status: 404 };
+        }
+
+        // Ownership enforcement: student can only cancel their own order
+        if (order.user_id !== userId) {
+          return { error: 'You are not authorized to cancel this order.', status: 403 };
+        }
+
+        const currentStatus = order.status;
+
+        // Terminal state: already cancelled
+        if (currentStatus === 'Cancelled') {
+          return { error: 'Order is already cancelled.', status: 400 };
+        }
+
+        // Eligibility enforcement: only 'Confirmed' orders can be cancelled by students
+        if (currentStatus !== 'Confirmed') {
+          return {
+            error: `Order cannot be cancelled because it is currently "${currentStatus}". Only orders in "Confirmed" status can be cancelled.`,
+            status: 400
+          };
+        }
+
+        // Atomic inventory restoration: restore exact purchased quantities
+        const items = db.prepare(`
+          SELECT book_id, quantity
+          FROM order_items
+          WHERE order_id = ?
+        `).all(order.id) as any[];
+
+        const restoreStockStmt = db.prepare('UPDATE books SET stock = stock + ? WHERE id = ?');
+        for (const item of items) {
+          restoreStockStmt.run(item.quantity, item.book_id);
+        }
+
+        // Atomically update order status to Cancelled
+        db.prepare('UPDATE orders SET status = ? WHERE id = ?').run('Cancelled', order.id);
+
+        return {
+          success: true,
+          message: `Order #${order.order_number || order.id} has been successfully cancelled and stock returned to campus inventory.`,
+          orderId: order.id,
+          orderNumber: order.order_number,
+          status: 'Cancelled',
+          statusChanged: true
+        };
+      }).immediate();
+
+      if (cancelTx.error) {
+        return res.status(cancelTx.status || 400).json({ error: cancelTx.error });
+      }
+
+      return res.json(cancelTx);
+    } catch (err: any) {
+      console.error('Error in student cancelOrder:', err);
+      return res.status(500).json({ error: 'Failed to process order cancellation.' });
+    }
   }
 };

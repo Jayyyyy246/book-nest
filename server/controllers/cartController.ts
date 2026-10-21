@@ -51,9 +51,13 @@ export const cartController = {
       return res.status(400).json({ error: 'bookId is required.' });
     }
 
-    const book = db.prepare('SELECT id, title, stock FROM books WHERE id = ?').get(bookId) as any;
+    const book = db.prepare('SELECT id, title, stock, is_archived FROM books WHERE id = ?').get(bookId) as any;
     if (!book) {
       return res.status(404).json({ error: 'Book not found.' });
+    }
+
+    if (book.is_archived === 1) {
+      return res.status(400).json({ error: `"${book.title}" is archived and no longer available.` });
     }
 
     if (book.stock <= 0) {
@@ -93,9 +97,13 @@ export const cartController = {
       return res.json({ success: true, message: 'Item removed from cart.', bookId, quantity: 0 });
     }
 
-    const book = db.prepare('SELECT id, title, stock FROM books WHERE id = ?').get(bookId) as any;
+    const book = db.prepare('SELECT id, title, stock, is_archived FROM books WHERE id = ?').get(bookId) as any;
     if (!book) {
       return res.status(404).json({ error: 'Book not found.' });
+    }
+
+    if (book.is_archived === 1) {
+      return res.status(400).json({ error: `"${book.title}" is archived and no longer available.` });
     }
 
     if (quantity > book.stock) {

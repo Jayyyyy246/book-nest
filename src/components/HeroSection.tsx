@@ -12,6 +12,7 @@ interface HeroSectionProps {
   onOpenScanner: () => void;
   onAddToCart: (book: Book) => void;
   onQuickView: (book: Book) => void;
+  onOpenAiAdvisor?: () => void;
 }
 
 export const HeroSection: React.FC<HeroSectionProps> = ({
@@ -24,6 +25,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
   onOpenScanner,
   onAddToCart,
   onQuickView,
+  onOpenAiAdvisor,
 }) => {
   const featuredFinalPrice = Math.round(featuredBook.price * (1 - featuredBook.discount / 100));
 
@@ -78,6 +80,17 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
                 <i className="fa-solid fa-camera text-amber-600"></i>
                 <span>Scan a Book Cover</span>
               </button>
+
+              {onOpenAiAdvisor && (
+                <button
+                  data-testid="hero-ai-advisor-btn"
+                  onClick={onOpenAiAdvisor}
+                  className="px-5 py-3.5 rounded-2xl bg-gradient-to-r from-amber-500/15 via-amber-100 to-amber-50 hover:from-amber-500/25 hover:to-amber-100 text-amber-950 font-bold text-sm border border-amber-300/80 shadow-xs hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 flex items-center gap-2.5"
+                >
+                  <i className="fa-solid fa-sparkles text-amber-600"></i>
+                  <span>AI Reading Advisor</span>
+                </button>
+              )}
             </div>
 
             {/* Trust Proof Metrics */}

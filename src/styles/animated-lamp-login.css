@@ -1,0 +1,671 @@
+/* ==========================================================================
+   BOOKNEST ANIMATED LAMP LOGIN STYLES
+   Adapted from: https://github.com/saklincodes/Animated-Lamp-Login
+   Original Copyright (c) 2025 saklincodes (MIT License)
+   Harmonized with BookNest Design System: Amber & Slate Brand Palette
+   Cinematic "Pull the Lamp to Reveal Login" Experience
+   ========================================================================== */
+
+:root {
+  /* Dynamic Lamp Theme Colors (BookNest Warm Amber) */
+  --booknest-lamp-clr: #f59e0b;
+  --booknest-lamp-glow-core: #fffbeb;
+  --booknest-lamp-glow-strong: rgba(245, 158, 11, 0.65);
+  --booknest-lamp-glow-soft: rgba(217, 119, 6, 0.25);
+  --booknest-lamp-beam-start: rgba(254, 243, 199, 0.75);
+  --booknest-lamp-beam-mid: rgba(245, 158, 11, 0.2);
+  --booknest-lamp-desk-glow: radial-gradient(ellipse at center, rgba(245, 158, 11, 0.35) 0%, rgba(217, 119, 6, 0.08) 55%, transparent 75%);
+}
+
+/* Modal Shell Layout */
+.booknest-auth-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  border-radius: 1.75rem;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  position: relative;
+  transition: max-width 0.5s cubic-bezier(0.16, 1, 0.3, 1), 
+              box-shadow 0.5s ease, 
+              background 0.5s ease,
+              border-color 0.5s ease;
+}
+
+/* OFF State: Cinematic Midnight Reading Room with Centered Lamp */
+.booknest-auth-dialog.lamp-off {
+  max-width: 520px;
+  min-height: 520px;
+  background: radial-gradient(circle at 50% 32%, #0e1728 0%, #050b14 100%);
+  box-shadow: 0 25px 60px -12px rgba(0, 0, 0, 0.9), 0 0 40px -5px rgba(15, 23, 42, 0.8);
+  border-color: rgba(148, 163, 184, 0.12);
+}
+
+/* ON State: Illuminated Room with Revealed Authentication Panel */
+.booknest-auth-dialog.lamp-on {
+  max-width: 960px;
+  min-height: 580px;
+  background: radial-gradient(circle at 35% 30%, #1e293b 0%, #0a1120 100%);
+  box-shadow: 0 30px 70px -12px rgba(0, 0, 0, 0.9), 0 0 50px 2px rgba(245, 158, 11, 0.22);
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+@media (min-width: 768px) {
+  .booknest-auth-dialog.lamp-on {
+    flex-direction: row;
+  }
+}
+
+/* ===================================================
+   LAMP STAGE / ILLUSTRATION CONTAINER
+   =================================================== */
+
+.booknest-lamp-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.85) 0%, rgba(2, 6, 23, 0.98) 100%);
+  user-select: none;
+  padding: 36px 20px 28px;
+  transition: flex 0.5s cubic-bezier(0.16, 1, 0.3, 1), min-height 0.5s ease;
+}
+
+.lamp-off .booknest-lamp-stage {
+  flex: 1;
+  min-height: 520px;
+}
+
+@media (min-width: 768px) {
+  .lamp-on .booknest-lamp-stage {
+    flex: 1.1;
+    min-height: 560px;
+  }
+}
+
+@media (max-width: 767px) {
+  .lamp-on .booknest-lamp-stage {
+    flex: 0 0 auto;
+    padding: 24px 16px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+}
+
+/* Subtle Night Nook Stars */
+.booknest-nook-stars {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.55;
+  background-image: 
+    radial-gradient(1px 1px at 25px 30px, #ffffff, rgba(0,0,0,0)),
+    radial-gradient(1.5px 1.5px at 120px 75px, #fef3c7, rgba(0,0,0,0)),
+    radial-gradient(1px 1px at 240px 45px, #ffffff, rgba(0,0,0,0)),
+    radial-gradient(1.2px 1.2px at 340px 130px, #fde68a, rgba(0,0,0,0)),
+    radial-gradient(1px 1px at 80px 190px, #ffffff, rgba(0,0,0,0)),
+    radial-gradient(1.2px 1.2px at 420px 80px, #ffffff, rgba(0,0,0,0));
+  background-repeat: repeat;
+  background-size: 400px 260px;
+  transition: opacity 0.6s ease;
+}
+
+.lamp-on .booknest-nook-stars {
+  opacity: 0.22;
+}
+
+/* Floating warm dust motes when lamp is ON */
+.booknest-dust-motes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+
+.lamp-on .booknest-dust-motes {
+  opacity: 1;
+}
+
+.booknest-mote {
+  position: absolute;
+  border-radius: 50%;
+  background: #fbbf24;
+  box-shadow: 0 0 6px #f59e0b;
+  pointer-events: none;
+  opacity: 0.65;
+  animation: moteDrift 8s ease-in-out infinite alternate;
+}
+
+@keyframes moteDrift {
+  0% { transform: translateY(0px) translateX(0px) scale(0.8); opacity: 0.2; }
+  50% { transform: translateY(-20px) translateX(10px) scale(1.1); opacity: 0.7; }
+  100% { transform: translateY(-40px) translateX(-8px) scale(0.9); opacity: 0.3; }
+}
+
+/* Controls Overlay: Sound FX & State Badge */
+.booknest-lamp-controls {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  right: 56px; /* leave room for modal close button */
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 25;
+}
+
+.booknest-lamp-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.booknest-lamp-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #64748b;
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+}
+
+.lamp-on .booknest-lamp-pill-dot {
+  background: #fbbf24;
+  box-shadow: 0 0 8px #f59e0b;
+}
+
+.booknest-sound-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.booknest-sound-btn:hover {
+  background: rgba(30, 41, 59, 0.9);
+  color: #f1f5f9;
+  border-color: rgba(255, 255, 255, 0.25);
+  transform: scale(1.05);
+}
+
+.booknest-sound-btn:focus-visible {
+  outline: none;
+  ring: 2px solid #f59e0b;
+}
+
+/* ===================================================
+   LAMP ASSEMBLY (Head, Stem, Joint, Base, Pull-Switch)
+   =================================================== */
+
+.booknest-lamp-assembly {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transform: scale(1);
+  transform-origin: center bottom;
+  transition: transform 0.3s ease;
+  z-index: 10;
+}
+
+@media (max-width: 767px) {
+  .lamp-on .booknest-lamp-assembly {
+    transform: scale(0.72);
+    margin-top: 6px;
+    margin-bottom: -22px;
+  }
+}
+
+/* Finial */
+.booknest-lamp-finial {
+  width: 16px;
+  height: 8px;
+  background: linear-gradient(180deg, #d97706 0%, #78350f 100%);
+  border-radius: 6px 6px 0 0;
+  box-shadow: 0 -2px 5px rgba(0, 0, 0, 0.5);
+  z-index: 12;
+}
+
+/* Lampshade Head */
+.booknest-lamp-head {
+  width: 140px;
+  height: 56px;
+  background: linear-gradient(135deg, #334155 0%, #1e293b 60%, #0f172a 100%);
+  border-radius: 140px 140px 8px 8px;
+  box-shadow: inset 0 3px 6px rgba(255, 255, 255, 0.2), 
+              inset 0 -2px 6px rgba(0, 0, 0, 0.8),
+              0 15px 30px rgba(0, 0, 0, 0.8);
+  position: relative;
+  z-index: 11;
+  border-bottom: 3px solid #0f172a;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.4s ease;
+}
+
+.lamp-on .booknest-lamp-head {
+  box-shadow: inset 0 -4px 15px var(--booknest-lamp-glow-soft), 
+              inset 0 3px 6px rgba(255, 255, 255, 0.25),
+              0 15px 30px rgba(0, 0, 0, 0.9);
+}
+
+/* Inner Bulb */
+.booknest-lamp-bulb {
+  width: 30px;
+  height: 12px;
+  background: #334155;
+  border-radius: 50% 50% 0 0;
+  margin-bottom: 2px;
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+}
+
+.lamp-on .booknest-lamp-bulb {
+  background: var(--booknest-lamp-glow-core);
+  box-shadow: 0 0 20px 8px var(--booknest-lamp-clr);
+}
+
+/* Core Filament Glow */
+.booknest-lamp-glow {
+  position: absolute;
+  top: 48px;
+  width: 100px;
+  height: 24px;
+  background: #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 45px 25px var(--booknest-lamp-glow-strong), 0 0 90px 45px var(--booknest-lamp-glow-soft);
+  opacity: 0;
+  transition: opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 10;
+  pointer-events: none;
+}
+
+.lamp-on .booknest-lamp-glow {
+  opacity: 1;
+}
+
+/* Volumetric Light Beam */
+.booknest-light-beam {
+  position: absolute;
+  top: 50px;
+  width: 480px;
+  height: 340px;
+  clip-path: polygon(42% 0, 58% 0, 100% 100%, 0 100%);
+  background: linear-gradient(180deg, var(--booknest-lamp-beam-start) 0%, var(--booknest-lamp-beam-mid) 55%, rgba(0, 0, 0, 0) 100%);
+  opacity: 0;
+  transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 6;
+  pointer-events: none;
+  filter: blur(8px);
+  transform-origin: 50% 0%;
+}
+
+.lamp-on .booknest-light-beam {
+  opacity: 0.92;
+}
+
+/* Stem Hardware */
+.booknest-lamp-neck-joint {
+  width: 12px;
+  height: 8px;
+  background: linear-gradient(90deg, #b45309 0%, #fbbf24 50%, #78350f 100%);
+  border-radius: 3px;
+  z-index: 9;
+}
+
+.booknest-lamp-stem {
+  width: 7px;
+  height: 220px;
+  background: linear-gradient(90deg, #0f172a 0%, #334155 45%, #0f172a 100%);
+  position: relative;
+  z-index: 8;
+  box-shadow: 0 0 10px rgba(0,0,0,0.8);
+  transition: box-shadow 0.4s ease;
+}
+
+.lamp-on .booknest-lamp-stem {
+  box-shadow: 0 0 14px var(--booknest-lamp-glow-soft);
+}
+
+.booknest-lamp-joint {
+  width: 16px;
+  height: 10px;
+  background: linear-gradient(90deg, #b45309 0%, #fbbf24 50%, #78350f 100%);
+  border-radius: 4px;
+  margin-top: -5px;
+  z-index: 9;
+}
+
+.booknest-lamp-base {
+  width: 110px;
+  height: 18px;
+  background: linear-gradient(180deg, #334155 0%, #0f172a 100%);
+  border-radius: 36px 36px 6px 6px;
+  box-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.15), 0 12px 24px rgba(0, 0, 0, 0.9);
+  position: relative;
+  z-index: 9;
+  border-bottom: 2px solid #020617;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.booknest-base-ridge {
+  width: 70px;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+}
+
+/* Desk Surface Reflection */
+.booknest-desk-surface {
+  position: absolute;
+  bottom: -35px;
+  width: 520px;
+  height: 90px;
+  background: var(--booknest-lamp-desk-glow);
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.lamp-on .booknest-desk-surface {
+  opacity: 1;
+}
+
+/* ===================================================
+   PULL-STRING & HANDLE WITH INTERACTIVE PHYSICS
+   =================================================== */
+
+.booknest-string-svg {
+  position: absolute;
+  top: 50px;
+  left: calc(50% + 50px);
+  width: 4px;
+  height: 4px;
+  overflow: visible;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.booknest-string-svg path {
+  stroke: #94a3b8;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  fill: none;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.8));
+}
+
+.booknest-string-handle {
+  position: absolute;
+  top: 130px;
+  left: calc(50% + 44px);
+  width: 14px;
+  height: 24px;
+  background: linear-gradient(180deg, #fbbf24 0%, #d97706 60%, #78350f 100%);
+  border-radius: 7px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.8), inset 0 1px 3px rgba(255, 255, 255, 0.4);
+  cursor: grab;
+  touch-action: none;
+  z-index: 15;
+  transition: box-shadow 0.2s ease;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  padding-bottom: 2px;
+}
+
+.booknest-string-handle:hover {
+  box-shadow: 0 0 15px rgba(245, 158, 11, 0.8), inset 0 1px 4px rgba(255, 255, 255, 0.6);
+}
+
+.booknest-string-handle.dragging {
+  cursor: grabbing;
+  box-shadow: 0 0 20px rgba(245, 158, 11, 1), inset 0 1px 4px rgba(255, 255, 255, 0.8);
+}
+
+.booknest-handle-bead {
+  width: 8px;
+  height: 8px;
+  background: #fef3c7;
+  border-radius: 50%;
+  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.8);
+}
+
+.booknest-string-handle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px #fbbf24, 0 0 15px rgba(245, 158, 11, 0.9);
+}
+
+/* Pull Hint Badge */
+.booknest-pull-hint {
+  position: absolute;
+  top: 10px;
+  left: calc(50% + 68px);
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #f1f5f9;
+  padding: 6px 12px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  opacity: 0.95;
+  animation: hintFloat 2.5s ease-in-out infinite;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  z-index: 20;
+}
+
+.lamp-on .booknest-pull-hint {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+@keyframes hintFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+/* ===================================================
+   CINEMATIC INTRO: QUOTE & INSTRUCTIONS (When OFF)
+   =================================================== */
+
+.booknest-lamp-intro {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  max-width: 420px;
+  padding: 0 16px;
+  z-index: 12;
+  transition: opacity 0.35s ease, transform 0.35s ease, max-height 0.4s ease;
+}
+
+.lamp-on .booknest-lamp-intro {
+  opacity: 0;
+  pointer-events: none;
+  max-height: 0;
+  overflow: hidden;
+  margin-top: 0;
+  transform: translateY(-10px);
+}
+
+.booknest-intro-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  color: #fbbf24;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+
+.booknest-intro-quote {
+  font-family: var(--font-serif, 'Newsreader', Georgia, serif);
+  font-size: 1.25rem;
+  line-height: 1.4;
+  font-style: italic;
+  font-weight: 500;
+  color: #f1f5f9;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
+  margin-bottom: 10px;
+}
+
+@media (min-width: 640px) {
+  .booknest-intro-quote {
+    font-size: 1.35rem;
+  }
+}
+
+.booknest-intro-instruction {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #f59e0b;
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+/* Accessible Alternative Lamp Toggle Button */
+.booknest-lamp-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.2) 0%, rgba(217, 119, 6, 0.25) 100%);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #fef3c7;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.booknest-lamp-toggle-btn:hover {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.35) 0%, rgba(217, 119, 6, 0.45) 100%);
+  border-color: rgba(245, 158, 11, 0.7);
+  color: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(245, 158, 11, 0.25);
+}
+
+.booknest-lamp-toggle-btn:focus-visible {
+  outline: none;
+  ring: 2px solid #fbbf24;
+}
+
+/* ===================================================
+   AUTHENTICATION CARD SIDE (Revealed by Lamp Light)
+   =================================================== */
+
+.booknest-auth-card-side {
+  flex: 1.25;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 28px 24px;
+  background: #ffffff;
+  color: #0f172a;
+  position: relative;
+  z-index: 20;
+}
+
+@media (min-width: 640px) {
+  .booknest-auth-card-side {
+    padding: 36px 38px;
+  }
+}
+
+/* Hidden state when lamp is OFF */
+.booknest-auth-card-side.hidden-state {
+  display: none !important;
+  opacity: 0;
+  transform: translateY(18px);
+  pointer-events: none;
+}
+
+/* Revealed state when lamp is ON (smooth fade-in and rise ~16px) */
+.booknest-auth-card-side.revealed {
+  display: flex !important;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.5s ease 0.06s, transform 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.06s;
+  animation: revealCard 0.55s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes revealCard {
+  0% {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Subtle warm ambient highlight on the form container when lamp is ON */
+.lamp-on .booknest-auth-card-side {
+  background: #ffffff;
+}
+
+/* ===================================================
+   PREFERS-REDUCED-MOTION ACCESSIBILITY OVERRIDES
+   =================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  .booknest-auth-dialog,
+  .booknest-lamp-stage,
+  .booknest-lamp-head,
+  .booknest-light-beam,
+  .booknest-string-handle,
+  .booknest-desk-surface,
+  .booknest-auth-card-side,
+  .booknest-lamp-intro {
+    transition: none !important;
+    animation: none !important;
+  }
+
+  .booknest-mote,
+  .booknest-pull-hint,
+  .booknest-auth-card-side.revealed {
+    animation: none !important;
+  }
+}

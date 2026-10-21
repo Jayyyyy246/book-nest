@@ -5,7 +5,7 @@ import { AuthRequest } from '../middleware/auth.js';
 export const booksController = {
   // GET /api/books (with filters, sorting, pagination)
   getBooks: (req: Request, res: Response) => {
-    const { category, search, maxPrice, stockOnly, sortBy, limit, offset } = req.query;
+    const { category, search, maxPrice, stockOnly, sortBy, limit, offset, includeArchived } = req.query;
 
     let query = `
       SELECT 
@@ -25,6 +25,7 @@ export const booksController = {
         b.publication_year as year,
         b.language,
         b.description,
+        b.is_archived as isArchived,
         (SELECT COUNT(*) FROM reviews r WHERE r.book_id = b.id) as reviewCount
       FROM books b
       LEFT JOIN authors a ON b.author_id = a.id
@@ -33,6 +34,10 @@ export const booksController = {
     `;
 
     const params: any[] = [];
+
+    if (includeArchived !== 'true') {
+      query += ' AND (b.is_archived IS NULL OR b.is_archived = 0)';
+    }
 
     if (category && category !== 'all') {
       query += ` AND (c.slug = ? OR LOWER(c.name) = LOWER(?) OR (c.slug IS NULL AND LOWER(?) = 'other'))`;
@@ -117,7 +122,8 @@ export const booksController = {
       FROM books b
       LEFT JOIN authors a ON b.author_id = a.id
       LEFT JOIN categories c ON b.category_id = c.id
-      WHERE LOWER(b.title) LIKE ? OR LOWER(a.name) LIKE ? OR b.isbn LIKE ? OR LOWER(COALESCE(c.name, 'Other')) LIKE ?
+      WHERE (b.is_archived IS NULL OR b.is_archived = 0)
+        AND (LOWER(b.title) LIKE ? OR LOWER(a.name) LIKE ? OR b.isbn LIKE ? OR LOWER(COALESCE(c.name, 'Other')) LIKE ?)
       ORDER BY b.rating DESC
       LIMIT 25
     `).all(clean, clean, clean, clean) as any[];
@@ -155,11 +161,13 @@ export const booksController = {
         b.publication_year as year,
         b.language,
         b.description,
+        b.is_archived as isArchived,
         (SELECT COUNT(*) FROM reviews r WHERE r.book_id = b.id) as reviewCount
       FROM books b
       LEFT JOIN authors a ON b.author_id = a.id
       LEFT JOIN categories c ON b.category_id = c.id
-      WHERE c.slug = ? OR LOWER(c.name) = LOWER(?) OR (c.slug IS NULL AND ? = 'other')
+      WHERE (b.is_archived IS NULL OR b.is_archived = 0)
+        AND (c.slug = ? OR LOWER(c.name) = LOWER(?) OR (c.slug IS NULL AND ? = 'other'))
       ORDER BY b.rating DESC
     `).all(category, category, category.toLowerCase()) as any[];
 
@@ -170,6 +178,7 @@ export const booksController = {
   getBookById: (req: AuthRequest, res: Response) => {
     const { id } = req.params;
     const isNumeric = !isNaN(Number(id));
+    const includeArchived = req.query.includeArchived === 'true' || req.user?.role === 'admin';
 
     const book = db.prepare(`
       SELECT 
@@ -190,11 +199,13 @@ export const booksController = {
         b.publication_year as year,
         b.language,
         b.description,
-        b.views
+        b.views,
+        b.is_archived as isArchived
       FROM books b
       LEFT JOIN authors a ON b.author_id = a.id
       LEFT JOIN categories c ON b.category_id = c.id
       WHERE ${isNumeric ? 'b.id = ?' : 'b.isbn = ?'}
+        ${includeArchived ? '' : 'AND (b.is_archived IS NULL OR b.is_archived = 0)'}
     `).get(isNumeric ? Number(id) : id) as any;
 
     if (!book) {
@@ -417,29 +428,45 @@ export const booksController = {
     res.json({ success: true, message: 'Stock level updated successfully.', bookId: Number(id), stock: Number(stock) });
   },
 
-  // DELETE /api/books/:id (Admin required)
+  // DELETE /api/books/:id (Admin required) - Safe Idempotent Soft Archiving
   deleteBook: (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const existing = db.prepare('SELECT id, title FROM books WHERE id = ?').get(id) as any;
+      if (!id || isNaN(Number(id))) {
+        return res.status(400).json({ error: 'Valid numeric book ID is required.' });
+      }
+
+      const existing = db.prepare('SELECT id, title, is_archived FROM books WHERE id = ?').get(id) as any;
       if (!existing) {
         return res.status(404).json({ error: 'Book not found.' });
       }
 
-      // Perform complete cascade deletion across dependent tables in transaction
+      // Idempotency check: if book is already archived, return clean success
+      if (existing.is_archived === 1) {
+        return res.json({
+          success: true,
+          message: `"${existing.title}" is already archived.`,
+          bookId: Number(id),
+          archived: true
+        });
+      }
+
+      // Safe soft-deletion: Clean up active in-flight carts & wishlists, but PRESERVE order_items & invoices!
       db.transaction(() => {
         db.prepare('DELETE FROM cart_items WHERE book_id = ?').run(id);
         db.prepare('DELETE FROM wishlist WHERE book_id = ?').run(id);
-        db.prepare('DELETE FROM reviews WHERE book_id = ?').run(id);
-        db.prepare('DELETE FROM book_views WHERE book_id = ?').run(id);
-        db.prepare('DELETE FROM order_items WHERE book_id = ?').run(id);
-        db.prepare('DELETE FROM books WHERE id = ?').run(id);
+        db.prepare('UPDATE books SET is_archived = 1 WHERE id = ?').run(id);
       })();
 
-      res.json({ success: true, message: `"${existing.title}" deleted from catalog.`, bookId: Number(id) });
+      res.json({
+        success: true,
+        message: `"${existing.title}" archived successfully from catalog.`,
+        bookId: Number(id),
+        archived: true
+      });
     } catch (err: any) {
-      console.error('Delete book error:', err);
-      res.status(500).json({ error: err.message || 'Database error occurred while deleting book.' });
+      console.error('Delete/Archive book error:', err);
+      res.status(500).json({ error: err.message || 'Database error occurred while archiving book.' });
     }
   }
 };

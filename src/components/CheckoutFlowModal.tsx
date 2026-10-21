@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Book, CartSummaryData } from '../types';
 import { api } from '../api';
+import { useModalA11y } from '../hooks/useModalA11y';
 
 export interface CheckoutAddress {
   fullName: string;
@@ -48,14 +49,10 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [completedOrder, setCompletedOrder] = useState<any | null>(null);
 
-  // Close on Escape key
-  React.useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  const { modalRef } = useModalA11y({
+    isOpen,
+    onClose,
+  });
 
   if (!isOpen) return null;
 
@@ -99,7 +96,13 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+    <div
+      ref={modalRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="checkout-modal-title"
+      className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4"
+    >
       
       {/* Container Card */}
       <div className="relative w-full max-w-2xl bg-white rounded-3xl border border-slate-200/90 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
@@ -116,21 +119,22 @@ export const CheckoutFlowModal: React.FC<CheckoutFlowModalProps> = ({
                 DEMO PAYMENT
               </span>
             </div>
-            <h2 className="font-serif font-black text-2xl text-slate-900">
+            <h2 id="checkout-modal-title" className="font-serif font-black text-2xl text-slate-900">
               {completedOrder ? 'Tax Invoice & Order Manifest' : 'Campus Order Placement'}
             </h2>
           </div>
 
           <button
             onClick={onClose}
-            className="w-9 h-9 rounded-full bg-white hover:bg-slate-100 border border-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center transition-colors"
+            aria-label="Close checkout modal"
+            className="w-9 h-9 rounded-full bg-white hover:bg-slate-100 border border-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
           >
             <i className="fa-solid fa-xmark text-sm"></i>
           </button>
         </div>
 
         {errorMessage && (
-          <div className="mx-6 mt-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+          <div role="alert" className="mx-6 mt-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
             <i className="fa-solid fa-circle-exclamation text-rose-600"></i>
             <span>{errorMessage}</span>
           </div>
