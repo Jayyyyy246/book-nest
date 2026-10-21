@@ -63,8 +63,8 @@ On the very first launch, the backend automatically initializes all tables and s
 - Over 300 academic and campus books across all curriculum categories.
 - Pre-configured discount coupons (e.g. `WELCOME10` for 10% off).
 - Demo user accounts for instant testing:
-  - **Demo Student**: `student@booknest.edu` / `student123`
-  - **Demo Administrator**: `admin@booknest.edu` / `admin123`
+  - **Demo Student**: `user@booknest.com` / `User@123`
+  - **Demo Administrator**: `admin@booknest.com` / `Admin@123`
 
 ---
 
@@ -89,5 +89,5 @@ http://localhost:3000
 ## 5. Development Shortcuts & Credentials
 
 For fast manual testing, click the **"Sign In / Register"** button in the top navigation bar to open the **Animated Lamp Login**. When the lamp string is pulled, quick demo buttons are available:
-- **Demo Student** (`student@booknest.edu`): Student browsing, shopping cart, orders, wishlist.
-- **Demo Admin** (`admin@booknest.edu`): Unlocks the top navigation **"Admin"** link to access inventory controls, sales metrics, and order dispatch workflows.
+- **Demo Student** (`user@booknest.com` / `User@123`): Student browsing, shopping cart, orders, wishlist.
+- **Demo Admin** (`admin@booknest.com` / `Admin@123`): Unlocks the top navigation **"Admin"** link to access inventory controls, sales metrics, and order dispatch workflows.

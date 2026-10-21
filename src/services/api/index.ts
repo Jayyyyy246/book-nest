@@ -1,4 +1,4 @@
-import { getStoredToken, setStoredToken, ApiError, request } from './client';
+import { getStoredToken, setStoredToken, ApiError, request, getApiUrl } from './client';
 import { authApi } from './authApi';
 import { booksApi } from './booksApi';
 import { cartApi } from './cartApi';
@@ -8,7 +8,7 @@ import { scannerApi } from './scannerApi';
 import { recommendationsApi } from './recommendationsApi';
 import { adminApi } from './adminApi';
 
-export { getStoredToken, setStoredToken, ApiError, request };
+export { getStoredToken, setStoredToken, ApiError, request, getApiUrl };
 export {
   authApi,
   booksApi,

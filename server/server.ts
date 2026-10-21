@@ -1,4 +1,6 @@
 import express from 'express';
+import path from 'path';
+import fs from 'fs';
 import { config } from './config/index.js';
 import { initDatabase } from './database/index.js';
 import { corsMiddleware } from './middleware/cors.js';
@@ -64,6 +66,20 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/reviews', reviewsRoutes);
 app.use('/api/coupons', couponsRoutes);
 app.use('/api/recommendations', recommendationsRoutes);
+
+// Serve compiled frontend production assets if dist/ exists
+const distPath = path.resolve(process.cwd(), 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+
+  // Client-side SPA routing fallback for non-API routes
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) {
+      return next();
+    }
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
 
 import { errorHandler } from './middleware/errorHandler.js';
 

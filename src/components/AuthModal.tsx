@@ -9,7 +9,7 @@
    ========================================================================== */
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { api, setStoredToken } from '../api';
+import { api, setStoredToken, getApiUrl } from '../api';
 import { UserSession } from '../types';
 import { useModalA11y } from '../hooks/useModalA11y';
 import { AnimatedLampLogin } from './AnimatedLampLogin';
@@ -141,7 +141,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onAuthSuc
   const handleGoogleSignIn = () => {
     setError(null);
     setGoogleLoading(true);
-    window.location.href = '/api/auth/google';
+    window.location.href = getApiUrl('/api/auth/google');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {

@@ -26,6 +26,19 @@ export class ApiError extends Error {
   }
 }
 
+const API_BASE_URL = (
+  (typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL)) ||
+  ''
+).replace(/\/+$/, '');
+
+export function getApiUrl(endpoint: string): string {
+  if (/^https?:\/\//i.test(endpoint)) {
+    return endpoint;
+  }
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return `${API_BASE_URL}${cleanEndpoint}`;
+}
+
 export async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = getStoredToken();
   const headers: Record<string, string> = {
@@ -37,7 +50,8 @@ export async function request<T>(endpoint: string, options: RequestInit = {}): P
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const response = await fetch(endpoint, {
+  const url = getApiUrl(endpoint);
+  const response = await fetch(url, {
     ...options,
     headers,
   });
